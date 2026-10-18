@@ -1,0 +1,23 @@
+{
+ "squad_bias": {
+  "ProtectMain": -0.12134942626773013,
+  "Reposition": -0.041760476112718665,
+  "PressTarget": 0.14651066402896487,
+  "HarassFlank": 0.06834032399999915,
+  "ContestSupply": -0.021163067517876444,
+  "Hold": 0.009262690663080735,
+  "Regroup": -0.019999999999999997,
+  "Disengage": -0.019840708793719547
+ },
+ "main_bias": {
+  "Engage": 0.0,
+  "HoldNear": 0.0,
+  "MoveTo": 0.0,
+  "Retreat": 0.0,
+  "Resupply": 0.0
+ },
+ "matches": 16,
+ "wins": 9,
+ "losses": 7,
+ "draws": 0
+}
