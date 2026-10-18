@@ -1,0 +1,20 @@
+{
+  "name": "gangup",
+  "version": "0.3.0",
+  "description": "GangUP - hybrid tactical action and intelligent squad warfare (GDD v0.3). TypeScript engine/client + Python SLAI service.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node tools/build-static.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:py": "python3 -m unittest discover -s tests_py -t . -v",
+    "play": "npm run build && python3 -m slai.server",
+    "headless": "tsx src/tools/headless.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
