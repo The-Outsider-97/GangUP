@@ -1,0 +1,316 @@
+import { AIDirector } from '../ai/director.js';
+import type { Difficulty } from '../ai/observation.js';
+import { DT } from '../engine/constants.js';
+import { Match } from '../engine/match.js';
+import type { GameEvent, Team } from '../engine/types.js';
+import { HumanController } from './controller.js';
+import { Hud, fillKeyTables } from './hud.js';
+import { buildHudModel, formatWaveArithmetic } from './hudModel.js';
+import { Renderer } from './renderer.js';
+
+type Mode = 'slai' | 'baseline' | 'spectate';
+interface Options { mode: Mode; difficulty: Difficulty; url: string; seed: number; fog: boolean }
+
+const HUMAN: Team = 0; // Green
+const AI_TEAM: Team = 1; // Red = SLAI
+const REASONS: Record<string, string> = {
+  'hidden-target': 'Target is not currently visible',
+  unreachable: 'No walkable route to that point',
+  'squad-full': 'A squad holds at most 10 soldiers',
+  'bad-member': 'Only your living soldiers can join a squad',
+  'follow-cycle': 'That follow order would create a loop',
+  'main-defeated': 'Your Main is defeated: no new orders',
+  'empty-squad': 'That squad has no members',
+  'bad-slot': 'Invalid squad number',
+};
+const $ = <T extends HTMLElement>(id: string): T => {
+  const e = document.getElementById(id);
+  if (!e) throw new Error('missing #' + id);
+  return e as T;
+};
+
+/** One running match: engine + AI directors + input + renderer, advanced by a fixed 60 Hz accumulator. */
+export class Game {
+  readonly m: Match;
+  readonly ctl: HumanController | null;
+  readonly renderer: Renderer;
+  readonly directors: AIDirector[] = [];
+  paused = false;
+  private acc = 0;
+  private lastFrame = 0;
+  private raf = 0;
+  private hudClock = 0;
+  private ended = false;
+  private disposers: (() => void)[] = [];
+  private drag: { px: number; py: number; wx: number; wy: number; moved: boolean; additive: boolean } | null = null;
+
+  constructor(readonly opts: Options, readonly hud: Hud, readonly canvas: HTMLCanvasElement, private onEnd: (g: Game) => void, private onMenu: () => void) {
+    const spectate = opts.mode === 'spectate';
+    this.m = new Match({ seed: opts.seed, humanTeam: spectate ? null : HUMAN });
+    this.renderer = new Renderer(canvas, this.m, HUMAN);
+    this.renderer.setFog(opts.fog && !spectate);
+    this.ctl = spectate ? null : new HumanController(this.m, HUMAN, (msg, kind) => this.hud.toast(msg, kind === 'bad' ? 'bad' : kind === 'warn' ? 'warn' : 'info'));
+
+    const mk = (team: Team, mode: 'slai' | 'baseline') => {
+      const d = new AIDirector(team, { difficulty: opts.difficulty, mode, baseUrl: opts.url.replace(/\/$/, ''), deadlineMs: 400 });
+      d.attach(this.m);
+      this.directors.push(d);
+    };
+    if (spectate) { mk(0, 'baseline'); mk(1, 'slai'); } else mk(AI_TEAM, opts.mode === 'slai' ? 'slai' : 'baseline');
+
+    this.m.commandListeners.push((env, res) => {
+      if (env.source !== 'human' || res.ok) return;
+      this.hud.toast(REASONS[res.reason ?? ''] ?? `Order rejected: ${res.reason}`, 'bad');
+    });
+    this.m.listeners.push((e) => this.onEvent(e));
+    this.bind();
+    this.hud.reset();
+    this.lastFrame = performance.now();
+    this.raf = requestAnimationFrame((t) => this.frame(t));
+  }
+
+  // ------------------------------------------------------------------ events → toasts
+  private onEvent(e: GameEvent): void {
+    const m = this.m;
+    switch (e.type) {
+      case 'wave': {
+        if (e.team !== HUMAN) break;
+        const line = { time: e.tick / 60, base: e.base, ownBonus: e.ownBonus, enemyPenalty: e.enemyPenalty, capacityRoom: e.capacityRoom, spawned: e.spawned, note: e.note };
+        this.hud.toast(`Wave: ${formatWaveArithmetic(line)}`, e.spawned > 0 ? 'good' : 'warn');
+        break;
+      }
+      case 'streakStart':
+        this.hud.toast(e.team === HUMAN ? 'Kill streak! +5 shield and +1 per wave for 40 s' : 'Enemy kill streak: your next waves lose 1 soldier', e.team === HUMAN ? 'gold' : 'bad');
+        break;
+      case 'streakEnd':
+        this.hud.toast(e.team === HUMAN ? 'Your streak ended: 90 s cooldown' : 'Enemy streak ended', 'info');
+        break;
+      case 'pickupSpawn': this.hud.toast('Supply pickup spawned at the centre', 'info'); break;
+      case 'pickupTaken': this.hud.toast(e.team === HUMAN ? `Supply collected: +${Math.round(e.gain)} HP` : 'The enemy Main took the supply', e.team === HUMAN ? 'good' : 'warn'); break;
+      case 'overload': if (e.actor === m.teams[HUMAN].mainId) this.hud.toast('Sword overload: sword disabled for 6 s', 'bad'); break;
+      case 'kill':
+        if (e.victimKind === 'main') this.hud.toast(e.team === HUMAN ? 'Your Main has fallen' : 'Enemy Main down', e.team === HUMAN ? 'bad' : 'good');
+        break;
+      case 'stance': if (e.team === HUMAN) this.hud.toast(`Stance: ${e.stance}`, 'info'); break;
+      default: break;
+    }
+  }
+
+  // ------------------------------------------------------------------ input binding
+  private bind(): void {
+    const on = <K extends keyof WindowEventMap>(t: Window, k: K, f: (e: WindowEventMap[K]) => void) => { t.addEventListener(k, f as EventListener); this.disposers.push(() => t.removeEventListener(k, f as EventListener)); };
+    const onC = <K extends keyof HTMLElementEventMap>(k: K, f: (e: HTMLElementEventMap[K]) => void) => { this.canvas.addEventListener(k, f as EventListener); this.disposers.push(() => this.canvas.removeEventListener(k, f as EventListener)); };
+    const pos = (e: MouseEvent) => { const r = this.canvas.getBoundingClientRect(); const px = e.clientX - r.left, py = e.clientY - r.top; return { px, py, ...this.renderer.toWorld(px, py) }; };
+
+    on(window, 'keydown', (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) this.setPaused(!this.paused); return; }
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        if (this.paused) this.setPaused(false);
+        else if (!this.ctl?.cancel()) this.setPaused(true);
+        return;
+      }
+      if (this.paused || !this.ctl || this.ended) return;
+      if (this.ctl.keyDown(e.code, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }, e.repeat)) e.preventDefault();
+    });
+    on(window, 'keyup', (e) => this.ctl?.keyUp(e.code));
+    on(window, 'blur', () => { this.ctl?.releaseAll(); if (!this.ended) this.setPaused(true); });
+    on(window, 'resize', () => this.renderer.resize());
+    onC('contextmenu', (e) => e.preventDefault());
+    onC('mousedown', (e) => {
+      if (this.paused || !this.ctl || this.ended) return;
+      this.canvas.focus();
+      const p = pos(e);
+      const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+      if (e.button === 0 && mods.ctrl) { this.drag = { px: p.px, py: p.py, wx: p.x, wy: p.y, moved: false, additive: e.shiftKey }; return; }
+      this.ctl.mouseDown(p.x, p.y, e.button, mods);
+    });
+    onC('mousemove', (e) => {
+      const p = pos(e);
+      this.renderer.hover = { x: p.x, y: p.y };
+      if (this.drag) {
+        if (Math.hypot(p.px - this.drag.px, p.py - this.drag.py) > 5) this.drag.moved = true;
+        this.renderer.dragRect = this.drag.moved ? { x0: this.drag.wx, y0: this.drag.wy, x1: p.x, y1: p.y } : null;
+      }
+    });
+    on(window, 'mouseup', (e) => {
+      if (this.drag && this.ctl && e.button === 0) {
+        const p = pos(e);
+        if (this.drag.moved) this.ctl.dragSelect(this.drag.wx, this.drag.wy, p.x, p.y, this.drag.additive);
+        else this.ctl.mouseDown(this.drag.wx, this.drag.wy, 0, { shift: this.drag.additive, ctrl: true });
+        this.drag = null;
+        this.renderer.dragRect = null;
+        return;
+      }
+      this.ctl?.mouseUp(e.button);
+    });
+  }
+
+  setPaused(p: boolean): void {
+    if (this.ended) return;
+    this.paused = p;
+    if (p) this.ctl?.releaseAll();
+    $('pause').classList.toggle('hidden', !p);
+    this.lastFrame = performance.now();
+  }
+
+  surrender(): void {
+    if (!this.ctl) return;
+    this.m.submit({ source: 'human', team: HUMAN, cmd: { t: 'Surrender' }, issuedAt: this.m.tick });
+    this.setPaused(false);
+  }
+
+  // ------------------------------------------------------------------ loop
+  private frame(now: number): void {
+    this.raf = requestAnimationFrame((t) => this.frame(t));
+    const dt = Math.min(250, now - this.lastFrame);
+    this.lastFrame = now;
+    if (!this.paused && !this.m.result.over) {
+      this.acc += dt / 1000;
+      let steps = 0;
+      while (this.acc >= DT && steps < 8 && !this.m.result.over) {
+        this.ctl?.onTick();
+        for (const d of this.directors) d.poll(this.m);
+        this.m.step();
+        this.acc -= DT;
+        steps++;
+      }
+      if (steps === 8) this.acc = 0; // never spiral: drop the backlog instead of fast-forwarding
+    }
+    this.renderer.draw(this.ctl, this.paused);
+    this.hudClock += dt;
+    if (this.hudClock > 90) {
+      this.hudClock = 0;
+      const dir = this.directors.find((d) => d.team === AI_TEAM) ?? null;
+      this.hud.update(buildHudModel(this.m, HUMAN), this.ctl?.selectedSquad ?? 0, this.opts.mode, dir, this.opts.mode === 'baseline' ? 'Baseline' : 'SLAI');
+      this.hud.hint(this.ctl?.targetMode === 'follow' ? 'FOLLOW: right-click an ally (Esc cancels)' : this.ctl?.targetMode === 'leader' ? 'LEADER: right-click a squad member (Esc cancels)' : null);
+    }
+    if (this.m.result.over && !this.ended) {
+      this.ended = true;
+      this.ctl?.releaseAll();
+      setTimeout(() => this.onEnd(this), 900); // let the final blow be seen
+    }
+  }
+
+  dispose(): void {
+    cancelAnimationFrame(this.raf);
+    for (const d of this.disposers) d();
+    this.disposers = [];
+    this.ctl?.releaseAll();
+  }
+  quit(): void { this.dispose(); this.onMenu(); }
+}
+
+// ====================================================================== app shell
+const hudEls = () => new Hud();
+let hud: Hud | null = null;
+let game: Game | null = null;
+
+function readOptions(): Options {
+  const seedRaw = ($('m-seed') as HTMLInputElement).value.trim();
+  return {
+    mode: ($('m-mode') as HTMLSelectElement).value as Mode,
+    difficulty: ($('m-diff') as HTMLSelectElement).value as Difficulty,
+    url: ($('m-url') as HTMLInputElement).value.trim() || location.origin,
+    seed: seedRaw === '' ? Math.floor(Math.random() * 1e9) : Math.max(0, Math.floor(Number(seedRaw)) || 0),
+    fog: ($('m-fog') as HTMLInputElement).checked,
+  };
+}
+
+async function checkService(): Promise<void> {
+  const box = $('slai-status');
+  const url = ($('m-url') as HTMLInputElement).value.trim() || location.origin;
+  box.className = 'status';
+  box.textContent = 'Checking SLAI service…';
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 1500);
+    const r = await fetch(url.replace(/\/$/, '') + '/v1/health', { signal: ctl.signal });
+    clearTimeout(t);
+    const j = await r.json();
+    box.className = 'status ok';
+    box.textContent = `SLAI online · policy ${j.policy} · ${j.trained ? 'trained weights' : 'scripted objectives (untrained)'}`;
+  } catch {
+    box.className = 'status bad';
+    box.textContent = 'SLAI service not reachable: Red will use the built-in scripted baseline. Start it with: python3 -m slai.server';
+  }
+}
+
+function startMatch(opts: Options): void {
+  game?.dispose();
+  const canvas = $('stage') as HTMLCanvasElement;
+  $('menu').classList.add('hidden');
+  $('result').classList.add('hidden');
+  $('pause').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  hud ??= hudEls();
+  game = new Game(opts, hud, canvas, showResult, showMenu);
+  (window as unknown as { __gangup?: unknown }).__gangup = { game }; // handle for automated tests
+  canvas.focus();
+}
+
+function showMenu(): void {
+  game?.dispose();
+  game = null;
+  $('app').classList.add('hidden');
+  $('pause').classList.add('hidden');
+  $('result').classList.add('hidden');
+  $('menu').classList.remove('hidden');
+  void checkService();
+}
+
+function showResult(g: Game): void {
+  const m = g.m;
+  const r = m.result;
+  const spectate = g.opts.mode === 'spectate';
+  const won = r.winner === HUMAN;
+  $('r-title').textContent = r.winner === null ? 'Draw' : spectate ? (r.winner === 0 ? 'Baseline (Green) wins' : 'SLAI (Red) wins') : won ? 'Victory' : 'Defeat';
+  $('r-title').style.color = r.winner === null ? '' : won || (spectate && r.winner === 1) ? '#3ddc84' : '#ff5d5d';
+  $('r-reason').textContent = `${r.reason} · ${Math.floor(r.tick / 3600)}:${String(Math.floor((r.tick / 60) % 60)).padStart(2, '0')}`;
+  const rows: [string, string | number, string | number][] = [['', 'Green', 'Red']];
+  const mains = [m.mainOf(0), m.mainOf(1)];
+  rows.push(['Main HP at end', Math.max(0, Math.ceil(mains[0].hp)), Math.max(0, Math.ceil(mains[1].hp))]);
+  rows.push(['Soldiers alive', m.soldiers(0).length, m.soldiers(1).length]);
+  rows.push(['Soldiers spawned', m.teams[0].soldiersSpawned, m.teams[1].soldiersSpawned]);
+  rows.push(['Main kills', mains[0].stats.kills, mains[1].stats.kills]);
+  rows.push(['Kill streaks', m.teams[0].streak.activations, m.teams[1].streak.activations]);
+  const dir = g.directors.find((d) => d.team === AI_TEAM);
+  if (dir && g.opts.mode !== 'baseline') rows.push(['SLAI decisions / fallback', dir.stats.decisions, dir.stats.fallbackDecisions]);
+  $('r-stats').innerHTML = rows.map((r2, i) => `<tr>${r2.map((c, j) => (i === 0 || j === 0 ? `<td><b>${c}</b></td>` : `<td>${c}</td>`)).join('')}</tr>`).join('');
+  $('result').classList.remove('hidden');
+  // report the outcome so SLAI can adapt its opening profile (only meaningful when it actually played)
+  if (g.opts.mode !== 'baseline') {
+    void fetch(g.opts.url.replace(/\/$/, '') + '/v1/match_end', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ seed: m.seed, team: AI_TEAM, winner: r.winner }),
+    }).catch(() => undefined);
+  }
+}
+
+function init(): void {
+  fillKeyTables();
+  ($('m-url') as HTMLInputElement).value = location.protocol.startsWith('http') ? location.origin : 'http://127.0.0.1:8765';
+  ($('m-url') as HTMLInputElement).addEventListener('change', () => void checkService());
+  $('m-start').addEventListener('click', () => startMatch(readOptions()));
+  $('p-resume').addEventListener('click', () => game?.setPaused(false));
+  $('p-surrender').addEventListener('click', () => game?.surrender());
+  $('p-quit').addEventListener('click', () => game?.quit());
+  $('r-again').addEventListener('click', () => { if (game) startMatch({ ...game.opts }); });
+  $('r-new').addEventListener('click', showMenu);
+  $('r-replay').addEventListener('click', () => {
+    if (!game) return;
+    const blob = new Blob([JSON.stringify(game.m.replay)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `gangup-replay-${game.m.seed}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  void checkService();
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+}

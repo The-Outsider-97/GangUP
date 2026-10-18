@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GangUP</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" class="hidden">
+  <header id="hud">
+    <section class="cell" id="c-main" aria-label="Main status">
+      <div class="label">Main</div>
+      <div class="bar"><i id="b-hp"></i><span id="t-hp"></span></div>
+      <div class="bar shield"><i id="b-sh"></i><span id="t-sh"></span></div>
+      <div class="tags"><span id="tag-bonus" class="tag gold hidden">+5 streak shield</span><span id="tag-dead" class="tag red hidden">DEFEATED</span></div>
+    </section>
+    <section class="cell" id="c-weapon" aria-label="Weapon">
+      <div class="label">Weapon</div>
+      <div class="big"><span id="t-mode"></span> <span id="t-ammo"></span></div>
+      <div class="bar strain"><i id="b-strain"></i><span id="t-strain"></span></div>
+      <div class="tags"><span id="tag-reload" class="tag hidden">RELOADING</span><span id="tag-overload" class="tag red hidden"></span></div>
+    </section>
+    <section class="cell" id="c-stance" aria-label="Stance">
+      <div class="label">Stance</div>
+      <div class="stance"><span id="st-def"><kbd>Q</kbd> Defensive</span><span id="st-off"><kbd>E</kbd> Offensive</span></div>
+      <div class="label">Soldiers</div>
+      <div class="big"><span id="t-soldiers"></span><small>/50</small> <small id="t-seen"></small></div>
+    </section>
+    <section class="cell wide" id="c-reinf" aria-label="Reinforcements">
+      <div class="label">Reinforcements</div>
+      <div class="big"><span id="t-wave"></span><small id="t-wavebase"></small></div>
+      <div class="small" id="t-wavelog"></div>
+      <div class="small dim" id="t-supply"></div>
+    </section>
+    <section class="cell wide" id="c-streak" aria-label="Kill streak">
+      <div class="label">Kill streak</div>
+      <div class="pips" id="pips"></div>
+      <div class="small" id="t-streak"></div>
+      <div class="small" id="t-estreak"></div>
+    </section>
+    <section class="cell" id="c-time" aria-label="Match">
+      <div class="label" id="t-phase"></div>
+      <div class="big" id="t-time"></div>
+      <div class="small" id="t-enemy"></div>
+      <div class="small" id="t-slai"></div>
+    </section>
+  </header>
+
+  <main id="stagewrap">
+    <canvas id="stage" tabindex="0"></canvas>
+    <div id="laststand" class="hidden" role="alert"></div>
+    <div id="mode-hint" class="hidden"></div>
+    <div id="toasts" aria-live="polite"></div>
+  </main>
+
+  <footer id="squads"></footer>
+</div>
+
+<div id="menu" class="screen">
+  <div class="panel">
+    <h1>GANG<span>UP</span></h1>
+    <p class="sub">Two Mains. Up to fifty soldiers each. Green (you) vs Red (SLAI).</p>
+    <div class="form">
+      <label>Opponent
+        <select id="m-mode">
+          <option value="slai">SLAI (Python service)</option>
+          <option value="baseline">Scripted baseline (built-in)</option>
+          <option value="spectate">Spectate: baseline vs SLAI</option>
+        </select>
+      </label>
+      <label>Difficulty
+        <select id="m-diff">
+          <option value="easy">Easy: slower planning, 1.1 s reaction</option>
+          <option value="normal" selected>Normal: 1 Hz, 0.4 s reaction</option>
+          <option value="hard">Hard: 2 Hz, 0.15 s reaction</option>
+        </select>
+      </label>
+      <label>SLAI service
+        <input id="m-url" type="text" spellcheck="false">
+      </label>
+      <label>Seed
+        <input id="m-seed" type="number" min="0" step="1">
+      </label>
+      <label class="check"><input id="m-fog" type="checkbox" checked> Show field-of-view shading</label>
+    </div>
+    <div id="slai-status" class="status">Checking SLAI service…</div>
+    <button id="m-start" class="primary">Start match</button>
+    <details>
+      <summary>Controls</summary>
+      <table class="keys" id="keys-menu"></table>
+    </details>
+    <p class="fine">Difficulty changes only SLAI's planning rate and reaction delay. It never changes damage, accuracy, vision, health or spawning.</p>
+  </div>
+</div>
+
+<div id="pause" class="screen hidden">
+  <div class="panel small">
+    <h2>Paused</h2>
+    <button id="p-resume" class="primary">Resume <kbd>Space</kbd></button>
+    <button id="p-surrender">Surrender</button>
+    <button id="p-quit">Quit to menu</button>
+    <details open>
+      <summary>Controls</summary>
+      <table class="keys" id="keys-pause"></table>
+    </details>
+  </div>
+</div>
+
+<div id="result" class="screen hidden">
+  <div class="panel">
+    <h2 id="r-title"></h2>
+    <p id="r-reason" class="sub"></p>
+    <table class="stats" id="r-stats"></table>
+    <div class="row">
+      <button id="r-again" class="primary">Rematch (same seed)</button>
+      <button id="r-new">New match</button>
+      <button id="r-replay">Download replay</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/client/main.js"></script>
+</body>
+</html>
