@@ -262,8 +262,11 @@ async function checkService() {
         const r = await fetch(url.replace(/\/$/, '') + '/v1/health', { signal: ctl.signal });
         clearTimeout(t);
         const j = await r.json();
-        box.className = 'status ok';
-        box.textContent = `SLAI online · policy ${j.policy} · ${j.trained ? 'trained weights' : 'scripted objectives (untrained)'}`;
+        const ag = j.agents;
+        const partial = ag?.mode === 'real' && (ag.ready ?? 0) < (ag.total ?? 0);
+        box.className = partial ? 'status' : 'status ok';
+        const agents = !ag ? '' : ag.mode === 'real' ? ` · real SLAI agents ${ag.ready}/${ag.total}${partial ? ` (missing: ${(ag.missing ?? []).join(', ')})` : ''}` : ' · built-in agents (lite)';
+        box.textContent = `SLAI online${agents} · policy ${j.policy} · ${j.trained ? 'trained weights' : 'scripted objectives (untrained)'}`;
     }
     catch {
         box.className = 'status bad';

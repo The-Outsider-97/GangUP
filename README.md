@@ -9,20 +9,35 @@ squads.
 |---|---|---|
 | Simulation engine | **TypeScript** | Authoritative 60 Hz fixed-step rules: movement, hitscan rifle, sword, shields, vision, waves, streaks, Last Stand |
 | Client | **TypeScript** (Canvas 2D + DOM) | Renderer, HUD, controls, menus, pause / surrender / result screens |
-| **SLAI** (intelligence) | **Python 3** (stdlib only) | Multi-agent decision service: Perception, Planning, Collaborative, Learning, Knowledge, Evaluation, Safety and Observability agents around a trainable tactical policy; also hosts the built game |
+| **SLAI** (intelligence) | **Python 3** | Decision service over the **real SLAI agents** (`<SLAI>/src/agents`: Perception, Planning, Collaborative, Learning, Knowledge, Evaluation, Safety, Observability) around a trainable tactical policy; also hosts the built game. A stdlib-only `--agents lite` mode exists for machines without the SLAI checkout |
 
 The engine never waits for SLAI. If the Python service is slow, offline or returns garbage, a deterministic scripted policy takes over
 for that decision (GDD 12.3, R10.3) and SLAI is re-probed automatically.
 
 ## Run it
 
-Everything below needs only **Python 3.10+** if you use the pre-built `dist/`:
+GangUP lives in `<SLAI>/applications/GangUP`. With the pre-built `dist/`, run from that folder with the Python environment of the SLAI repo
+(it has the dependencies the real agents need):
 
-```bash
-python3 -m slai.server            # serves the game AND the SLAI API on http://127.0.0.1:8765
+```powershell
+cd G:\GAIA\AI\SLAI\applications\GangUP
+& G:\GAIA\AI\SLAI\venv\Scripts\python.exe -m slai.bridge        # 1) diagnose: loads the 8 real agents, runs probe decisions, prints what each did
+& G:\GAIA\AI\SLAI\venv\Scripts\python.exe -m slai.server        # 2) serve the game AND the SLAI API on http://127.0.0.1:8765
 ```
 
-Open <http://127.0.0.1:8765>, pick an opponent and difficulty, press **Start match**.
+Open <http://127.0.0.1:8765>, pick an opponent and difficulty, press **Start match**. The menu shows `real SLAI agents 8/8`.
+
+```bash
+python3 -m slai.server --agents lite       # stdlib-only built-in agents (no SLAI checkout, no torch): used by CI and offline demos
+python3 -m slai.server --strict-agents     # refuse to start unless all eight real agents load
+python3 -m slai.server --only collaborative,observability   # load just these real agents (the rest use the built-in fallback)
+python3 -m slai.server --budget safety=400 --safety-enforce  # per-call time cap (ms); let a SafetyAgent 'block' verdict hold fire (default: recorded only)
+```
+
+The SLAI checkout is found automatically (walking up from `slai/bridge`), or via `--slai-root` / `$SLAI_ROOT`.
+
+Start-up takes about a minute: the agents load, then warm up (Perception, Safety ...). Three bugs in the SLAI checkout that break the Perception and Planning agents
+on every call are repaired in memory at load time (nothing on disk is touched; see `docs/SLAI.md`). Server and diagnostics print what was repaired.
 
 To rebuild the client (needs TypeScript: `npm i` or a global `tsc`):
 
@@ -80,7 +95,7 @@ and selection rings, so colour is never the only cue (GDD 15.4).
 ```bash
 npm run typecheck        # strict TypeScript
 npm test                 # 33 tests: engine rules & boundaries, determinism, 50v50 stress, AI fuzzing, director fallbacks, client logic
-npm run test:py          # 40 tests: schema, safety, policy, orchestrator, HTTP server, trainer
+npm run test:py          # 83 tests: schema, safety, policy, orchestrator, HTTP server, trainer, real-agent bridge (5 of them run the genuine Collaborative/Observability agents when a SLAI checkout is present)
 npm run headless -- --matches 10 --mode slai --url http://127.0.0.1:8765   # SLAI vs scripted baseline
 ```
 
