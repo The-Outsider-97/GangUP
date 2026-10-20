@@ -1,5 +1,6 @@
 import { RIFLE, SQUAD, SWORD, VISION, deg, ticksToSec } from '../engine/constants.js';
 import { nearestObstacle } from '../engine/geom.js';
+import { ImpactTracker, ScreenShake, lowHpVignette } from './effects.js';
 /** Faction identity never relies on colour alone (15.4): Green = round outline, Red = diamond outline. */
 const COL = {
     green: '#3ddc84',
@@ -16,7 +17,17 @@ const COL = {
 };
 const teamColor = (t) => (t === 0 ? COL.green : COL.red);
 const teamDark = (t) => (t === 0 ? COL.greenDark : COL.redDark);
-const MAX_FX = 400;
+const MAX_FX = 600;
+/** Deterministic little generator for particle spread (visual only; never the engine's RNG). */
+function mulberry(seed) {
+    let a = seed >>> 0;
+    return () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
 export class Renderer {
     canvas;
     m;
@@ -25,6 +36,11 @@ export class Renderer {
     fog = null;
     fogCtx = null;
     fx = [];
+    /** hit / recoil nudges, camera tremor and screen-edge pulses: visual only */
+    impact = new ImpactTracker();
+    shake = new ScreenShake();
+    frameNo = 0;
+    burstSeq = 0;
     scale = 10;
     ox = 0;
     oy = 0;
@@ -81,6 +97,18 @@ export class Renderer {
         if (this.fx.length > MAX_FX)
             this.fx.splice(0, this.fx.length - MAX_FX);
     }
+    /** A small spray of sparks: `dir` is the general direction (radians) and `spread` the cone width. */
+    burst(x, y, n, color, dir, spread = Math.PI * 2, speed = 0.09, life = 14) {
+        const rnd = mulberry((this.m.tick * 2654435761 + this.burstSeq++ * 40503) >>> 0);
+        for (let i = 0; i < n; i++) {
+            const a = (dir ?? 0) + (rnd() - 0.5) * (dir === null ? Math.PI * 2 : spread);
+            const v = speed * (0.5 + rnd());
+            this.add({ kind: 'spark', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, color, born: this.m.tick, life: life + Math.floor(rnd() * 6), len: 2 + rnd() * 3 });
+        }
+    }
+    isOwnMain(id) {
+        return this.m.teams[this.team].mainId === id;
+    }
     /** Effects are only generated for things the player may know about; hidden-enemy fire never reveals its origin. */
     onEvent(e) {
         const t = this.m.tick;
@@ -94,8 +122,20 @@ export class Renderer {
                 const shooterKnown = this.seen(e.actor);
                 const victimMine = !!victim && victim.team === this.team;
                 const color = e.result === 'shield' ? COL.shield : e.result === 'body' ? '#ffffff' : e.result === 'ally' ? COL.warn : '#7d8a99';
+                const aim = Math.atan2(e.y1 - e.y0, e.x1 - e.x0);
                 if (shooterKnown) {
                     this.add({ kind: 'tracer', x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, color, born: t, life: 8, width: shooter.kind === 'main' ? 2 : 1, dashed: e.result === 'miss' });
+                    this.add({ kind: 'glow', x: e.x0 + Math.cos(aim) * 0.9, y: e.y0 + Math.sin(aim) * 0.9, r: shooter.kind === 'main' ? 0.9 : 0.6, color: '#fff2b0', born: t, life: 3 }); // muzzle flash
+                    this.impact.recoil(shooter.id, e.x1 - e.x0, e.y1 - e.y0);
+                }
+                if (e.result === 'cover' && shooterKnown)
+                    this.burst(e.x1, e.y1, 3, '#aab6c6', aim + Math.PI, Math.PI * 0.8, 0.07, 10);
+                if (victim && (e.result === 'body' || e.result === 'shield') && (shooterKnown || victimMine)) {
+                    const strength = e.result === 'shield' ? 0.45 : Math.max(0.5, Math.min(1, (e.dmg ?? 10) / 25));
+                    this.impact.hit(victim.id, e.x1 - e.x0, e.y1 - e.y0, strength);
+                    this.burst(e.x1, e.y1, e.result === 'shield' ? 4 : 6, e.result === 'shield' ? COL.shield : '#ff6b6b', aim + Math.PI, Math.PI * 0.9);
+                    if (this.isOwnMain(victim.id))
+                        this.shake.hurtMain(e.result === 'shield' ? 0.2 : (e.dmg ?? 10) / 25);
                 }
                 if (e.result === 'shield' && victim && (shooterKnown || victimMine)) {
                     this.add({ kind: 'arc', x: victim.x, y: victim.y, r: victim.radius + 0.5, a0: victim.theta + Math.PI - deg(60), a1: victim.theta + Math.PI + deg(60), color: COL.shield, born: t, life: 14, width: 3 });
@@ -121,6 +161,16 @@ export class Renderer {
                 const thrust = e.kind === 'thrust';
                 const spec = thrust ? SWORD.thrust : SWORD.swipe;
                 this.add({ kind: 'sector', x: a.x, y: a.y, theta: a.theta, spread: spec.sector, reach: spec.reach, color: thrust ? '#ffd24d' : '#ffffff', born: t, life: 10 });
+                this.impact.lunge(a.id, Math.cos(a.theta), Math.sin(a.theta));
+                for (const id of (e.hits ?? [])) {
+                    const v = A(id);
+                    if (!v)
+                        continue;
+                    this.impact.hit(v.id, v.x - a.x, v.y - a.y, 1);
+                    this.burst(v.x, v.y, 7, thrust ? '#ffd24d' : '#ffffff', Math.atan2(v.y - a.y, v.x - a.x), Math.PI * 0.9, 0.11);
+                    if (this.isOwnMain(v.id))
+                        this.shake.hurtMain(0.8);
+                }
                 break;
             }
             case 'overload': {
@@ -136,6 +186,9 @@ export class Renderer {
                 // only mark deaths the player could witness (own units, or enemies currently visible)
                 if (v && (v.team === this.team || this.m.teams[this.team].teamVisible.has(v.id))) {
                     this.add({ kind: 'ring', x: v.x, y: v.y, r: 1.4, color: teamColor(v.team), born: t, life: 18, width: 2 });
+                    this.burst(v.x, v.y, v.kind === 'main' ? 28 : 11, teamColor(v.team), null, Math.PI * 2, v.kind === 'main' ? 0.16 : 0.1, v.kind === 'main' ? 26 : 16);
+                    if (v.kind === 'main')
+                        this.add({ kind: 'ring', x: v.x, y: v.y, r: 2.2, color: '#ffffff', born: t, life: 34, width: 3, grow: 2.4 });
                 }
                 break;
             }
@@ -144,6 +197,8 @@ export class Renderer {
                 if (this.seen(main.id)) {
                     this.add({ kind: 'ring', x: main.x, y: main.y, r: 3, color: '#ffe066', born: t, life: 50, width: 4 });
                     this.add({ kind: 'text', x: main.x, y: main.y - 2.2, text: 'STREAK!', color: '#ffe066', born: t, life: 70 });
+                    this.add({ kind: 'ring', x: main.x, y: main.y, r: 1.5, color: '#fff3b0', born: t, life: 36, width: 2, grow: 3.2 });
+                    this.burst(main.x, main.y, 22, '#ffe066', null, Math.PI * 2, 0.14, 24);
                 }
                 break;
             }
@@ -155,13 +210,48 @@ export class Renderer {
             }
             case 'contact': {
                 const a = A(e.a), b = A(e.b);
-                if (a && b && (this.seen(a.id) || this.seen(b.id)))
+                if (a && b && (this.seen(a.id) || this.seen(b.id))) {
                     this.add({ kind: 'ring', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, r: 0.7, color: '#ffa94d', born: t, life: 10, width: 2 });
+                    this.impact.hit(a.id, a.x - b.x, a.y - b.y, 0.55);
+                    this.impact.hit(b.id, b.x - a.x, b.y - a.y, 0.55);
+                    this.burst((a.x + b.x) / 2, (a.y + b.y) / 2, 4, '#ffa94d', null, Math.PI * 2, 0.07, 10);
+                    if (this.isOwnMain(a.id) || this.isOwnMain(b.id))
+                        this.shake.hurtMain(0.35);
+                }
                 break;
             }
             case 'pickupTaken': {
                 const p = this.m.arena.supply;
                 this.add({ kind: 'text', x: p.x, y: p.y - 1.5, text: 'SUPPLY', color: '#7ee0ff', born: t, life: 50 });
+                this.burst(p.x, p.y, 16, '#7ee0ff', null, Math.PI * 2, 0.12, 22);
+                break;
+            }
+            case 'pickupSpawn': {
+                const p = this.m.arena.supply;
+                this.add({ kind: 'ring', x: p.x, y: p.y, r: 0.8, color: '#7ee0ff', born: t, life: 40, width: 3, grow: 3.5 });
+                this.add({ kind: 'ring', x: p.x, y: p.y, r: 0.4, color: '#ffffff', born: t + 6, life: 34, width: 2, grow: 2.6 });
+                break;
+            }
+            case 'wave': {
+                const z = this.m.arena.zones[e.team];
+                if (e.team === this.team)
+                    this.add({ kind: 'zone', x0: z.x0, y0: z.y0, x1: z.x1, y1: z.y1, color: COL.green, born: t, life: 36 });
+                else if (e.spawned > 0 && this.m.teams[this.team].teamVisible.size > 0)
+                    this.add({ kind: 'zone', x0: z.x0, y0: z.y0, x1: z.x1, y1: z.y1, color: COL.red, born: t, life: 24 });
+                break;
+            }
+            case 'reloaded': {
+                const a = A(e.actor);
+                if (a && a.kind === 'main' && a.team === this.team) {
+                    this.add({ kind: 'ring', x: a.x, y: a.y, r: 1.2, color: '#9be7ff', born: t, life: 16, width: 2, grow: 1.2 });
+                    this.add({ kind: 'text', x: a.x, y: a.y - 1.6, text: 'RELOADED', color: '#9be7ff', born: t, life: 30 });
+                }
+                break;
+            }
+            case 'spawn': {
+                const a = A(e.actor);
+                if (a && a.team === this.team)
+                    this.add({ kind: 'ring', x: a.x, y: a.y, r: 0.4, color: COL.green, born: t, life: 14, width: 1.5, grow: 1.0 });
                 break;
             }
             default:
@@ -176,7 +266,11 @@ export class Renderer {
     draw(ctl, paused = false) {
         const c = this.ctx;
         const m = this.m;
-        c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        this.frameNo++;
+        this.impact.beginFrame();
+        this.shake.beginFrame();
+        const sh = this.shake.offset();
+        c.setTransform(this.dpr, 0, 0, this.dpr, sh.x * this.dpr, sh.y * this.dpr);
         c.clearRect(0, 0, this.cssW, this.cssH);
         c.fillStyle = '#0b0e12';
         c.fillRect(0, 0, this.cssW, this.cssH);
@@ -191,6 +285,8 @@ export class Renderer {
         if (this.fogEnabled)
             this.drawFog(c);
         this.drawSelectionBox(c);
+        c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); // screen-edge feedback does not shake
+        this.drawVignettes(c);
         if (paused) {
             c.fillStyle = 'rgba(0,0,0,0.45)';
             c.fillRect(0, 0, this.cssW, this.cssH);
@@ -341,6 +437,24 @@ export class Renderer {
             c.closePath();
         }
     }
+    /** Red screen edges: a quick pulse when the player's Main is hurt and a heartbeat below 20 / 10 HP. */
+    drawVignettes(c) {
+        const main = this.m.mainOf(this.team);
+        const alpha = Math.max(this.shake.hurtPulse() * 0.35, main.alive ? lowHpVignette(main.hp, this.frameNo) : 0);
+        if (alpha <= 0.005)
+            return;
+        const w = this.cssW, h = this.cssH;
+        c.fillStyle = '#ff1e1e';
+        for (let i = 0; i < 5; i++) { // nested frames fading inwards
+            const t = 10 + i * 12;
+            c.globalAlpha = alpha * (1 - i / 5);
+            c.fillRect(0, 0, w, t);
+            c.fillRect(0, h - t, w, t);
+            c.fillRect(0, 0, t, h);
+            c.fillRect(w - t, 0, t, h);
+        }
+        c.globalAlpha = 1;
+    }
     drawActors(c, ctl) {
         const ts = this.m.teams[this.team];
         const list = [];
@@ -354,7 +468,8 @@ export class Renderer {
         list.sort((p, q) => (p.kind === q.kind ? p.id - q.id : p.kind === 'main' ? 1 : -1)); // Mains on top
         const selSquad = ctl?.selectedSquad ?? 0;
         for (const a of list) {
-            const x = this.sx(a.x), y = this.sy(a.y);
+            const nudge = this.impact.offset(a.id);
+            const x = this.sx(a.x) + nudge.x, y = this.sy(a.y) + nudge.y;
             const isMain = a.kind === 'main';
             const r = Math.max(isMain ? 8 : 5, a.radius * this.scale);
             // rear shield arc (120° behind facing) — thickness shows remaining shield
@@ -374,6 +489,14 @@ export class Renderer {
             c.strokeStyle = teamColor(a.team);
             c.lineWidth = isMain ? 3 : 2;
             c.stroke();
+            const flash = this.impact.flash(a.id);
+            if (flash > 0) { // brief white flash of the body that was just hit
+                this.shapePath(c, a.team, x, y, r);
+                c.globalAlpha = 0.75 * flash;
+                c.fillStyle = '#ffffff';
+                c.fill();
+                c.globalAlpha = 1;
+            }
             if (isMain) {
                 this.shapePath(c, a.team, x, y, r + 4);
                 c.lineWidth = 1;
@@ -441,6 +564,8 @@ export class Renderer {
         const t = this.m.tick;
         this.fx = this.fx.filter((f) => t - f.born <= f.life);
         for (const f of this.fx) {
+            if (t < f.born)
+                continue; // scheduled for a few ticks from now
             const k = (t - f.born) / f.life;
             c.globalAlpha = Math.max(0, 1 - k);
             switch (f.kind) {
@@ -458,7 +583,7 @@ export class Renderer {
                     c.strokeStyle = f.color;
                     c.lineWidth = f.width;
                     c.beginPath();
-                    c.arc(this.sx(f.x), this.sy(f.y), (f.r + k * 0.8) * this.scale, 0, Math.PI * 2);
+                    c.arc(this.sx(f.x), this.sy(f.y), (f.r + k * (f.grow ?? 0.8)) * this.scale, 0, Math.PI * 2);
                     c.stroke();
                     break;
                 case 'arc':
@@ -486,6 +611,28 @@ export class Renderer {
                     c.stroke();
                     break;
                 }
+                case 'spark': {
+                    const age = t - f.born;
+                    const x = this.sx(f.x + f.vx * age), y = this.sy(f.y + f.vy * age);
+                    c.strokeStyle = f.color;
+                    c.lineWidth = 1.5;
+                    c.beginPath();
+                    c.moveTo(x, y);
+                    c.lineTo(x - f.vx * this.scale * f.len * 0.9, y - f.vy * this.scale * f.len * 0.9);
+                    c.stroke();
+                    break;
+                }
+                case 'glow':
+                    c.fillStyle = f.color;
+                    c.beginPath();
+                    c.arc(this.sx(f.x), this.sy(f.y), f.r * this.scale * (1 - k * 0.4), 0, Math.PI * 2);
+                    c.fill();
+                    break;
+                case 'zone':
+                    c.fillStyle = f.color;
+                    c.globalAlpha = Math.max(0, 0.22 * (1 - k));
+                    c.fillRect(this.sx(f.x0), this.sy(f.y0), (f.x1 - f.x0) * this.scale, (f.y1 - f.y0) * this.scale);
+                    break;
                 case 'sector':
                     c.fillStyle = f.color;
                     c.globalAlpha = Math.max(0, 0.45 * (1 - k));

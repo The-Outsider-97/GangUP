@@ -5,7 +5,7 @@ Endpoints:
   GET  /v1/health      liveness + policy info
   GET  /v1/stats       observability snapshot
   POST /v1/decide      {observation, feedback?} -> {schema, generation, actions, meta}
-  POST /v1/match_end   {seed, team, winner}      -> post-match learning step
+  POST /v1/match_end   {seed, team, winner, episode?} -> post-match learning step (idempotent per episode)
 """
 from __future__ import annotations
 
@@ -88,10 +88,15 @@ def make_handler(orch: Orchestrator, dist_dir: str, quiet: bool):
             if path == "/v1/match_end":
                 try:
                     with lock:
-                        out = orch.match_end(int(body["seed"]), int(body["team"]), body.get("winner"))
+                        if body.get("winner") not in (None, 0, 1):
+                            raise ValueError("winner")
+                        ep = body.get("episode")
+                        if ep is not None and not (isinstance(ep, str) and 0 < len(ep) <= 64):
+                            raise ValueError("episode")
+                        out = orch.match_end(int(body["seed"]), int(body["team"]), body.get("winner"), ep)
                     return self._json(200, out)
                 except (KeyError, ValueError, TypeError):
-                    return self._json(400, {"error": "need seed, team, winner"})
+                    return self._json(400, {"error": "need seed, team, winner (and optionally a string episode of at most 64 characters)"})
             return self._json(404, {"error": "not found"})
 
         def _static(self, path: str) -> None:

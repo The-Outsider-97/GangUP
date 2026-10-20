@@ -1,23 +1,51 @@
 {
  "squad_bias": {
-  "ProtectMain": -0.12134942626773013,
-  "Reposition": -0.041760476112718665,
-  "PressTarget": 0.14651066402896487,
-  "HarassFlank": 0.06834032399999915,
-  "ContestSupply": -0.021163067517876444,
-  "Hold": 0.009262690663080735,
-  "Regroup": -0.019999999999999997,
-  "Disengage": -0.019840708793719547
+  "ProtectMain": -0.5,
+  "Reposition": -0.1689823925681096,
+  "PressTarget": 0.395423861318853,
+  "HarassFlank": 0.40896623047379826,
+  "ContestSupply": -0.027994940083679865,
+  "Hold": 0.07550065128510311,
+  "Regroup": -0.04,
+  "Disengage": -0.03511150017208506
  },
  "main_bias": {
-  "Engage": 0.0,
-  "HoldNear": 0.0,
-  "MoveTo": 0.0,
-  "Retreat": 0.0,
-  "Resupply": 0.0
+  "Engage": 0.11767173788431329,
+  "HoldNear": -0.06511669169358254,
+  "MoveTo": 0.14790572658349238,
+  "Retreat": -0.13568782591431983,
+  "Resupply": -0.06477294685990338
  },
- "matches": 16,
- "wins": 9,
- "losses": 7,
- "draws": 0
+ "matches": 78,
+ "wins": 41,
+ "losses": 37,
+ "draws": 0,
+ "episodes": [
+  "0fa27bcc-7aa4-4a5a-afd2-dccd88a31740:1",
+  "99853049-9bd2-42ec-896b-34bb98412479:1",
+  "4484cbf6-4bac-4d4d-8c29-457c81f2e870:1",
+  "7936d7bd-bfab-49b9-8c99-810741c925cb:1",
+  "4fb5714f-1b3b-46f4-adee-8169f923c9f4:1",
+  "40583b8e-c4bd-446c-9426-b32b357e9c01:1",
+  "6fb16969-c650-4f1a-96b6-5f288cb24a7b:1",
+  "2e5e9067-0ceb-4aea-a40b-de9b0db0a17f:1",
+  "7cb0c25c-3474-4898-a83d-77e87b485ae7:1",
+  "07857326-621a-4ee6-bc99-525c4c189820:1",
+  "c10a1a57-5de2-4d4a-a187-b74c8c5cd9da:1",
+  "a237b591-d0b9-4344-ac33-f5a57b622de2:1",
+  "9166d8f7-a900-4c7a-ad3d-24088a98cf69:1",
+  "37fd2d49-c76b-4aa4-a647-57f8a85f14e4:1",
+  "173333a3-3c6f-4153-b4ce-f86e00d433a6:1",
+  "01e4cc69-b866-455b-af16-44c718d79ceb:1",
+  "085b6a11-d2f2-44c7-ba06-9f91d038d18f:1",
+  "8e20c6d9-c850-46d7-b8ad-1832e48ef1ed:1",
+  "472516c7-330d-4795-ae9b-509496f11eac:1",
+  "e61f44e3-11cd-4bd1-aef6-07801187cd2b:1",
+  "c8d112d5-cedb-4644-8b02-57ee259eea83:1",
+  "40a2ae59-4fbb-47ac-8346-65754f8c487a:1",
+  "6182d3cb-296f-45f2-a35f-867fddb46f8d:1",
+  "be4cd631-c411-4181-adcc-e5cbedf6ad2a:1",
+  "f25c983b-7dfd-48b6-b55e-6cbc9426c2e3:1",
+  "a819605d-78ab-4759-b0df-5209944650fb:1"
+ ]
 }

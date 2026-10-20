@@ -27,7 +27,9 @@ stage runs the domain fallback in ``slai/agents`` and says so (``meta.stages``),
 from __future__ import annotations
 
 import math
+import os
 import time
+import uuid
 from typing import Any
 
 from ..agents import Context
@@ -41,6 +43,7 @@ from ..agents.planning import PlanningAgent
 from ..agents.safety import SafetyAgent
 from ..geometry import clamp, dist
 from ..policy import TacticalDecisionPolicy
+from ..schema import episode_key
 from ..resolver import choose_lane
 from .host import RealAgentHost, StageBusy, StageTimeout, StageUnavailable
 
@@ -155,7 +158,7 @@ class RealPerception(PerceptionAgent):
             if budget is None:
                 raise StageTimeout("perception: no time left")
             vec = self.embed(text, budget)
-            key = (ctx.obs["seed"], ctx.obs["team"])
+            key = episode_key(ctx.obs)
             prev = self.prev.get(key)
             novelty = 0.0
             if prev and len(prev) == len(vec):
@@ -173,48 +176,127 @@ class RealPerception(PerceptionAgent):
 
 # ====================================================================== Learning
 class RealLearning(LearningAgent):
-    """Domain bias learning (objective names are GangUP's) + LearningSignals into the real LearningAgent."""
-    EVERY = 16  # decisions between performance signals (background; the real agent may be slow)
+    """Domain bias learning (objective names are GangUP's) + LearningSignals into the real LearningAgent.
 
-    def __init__(self, host: RealAgentHost, path: str | None = None, caps: dict | None = None) -> None:
+    Delivery is *acknowledged*, not assumed: a signal counts as ``acked`` only when the real agent answers ``recorded`` (or
+    ``duplicate``: it already holds that signal id). The outcome signal of a match is awaited for a short time; if the agent is
+    busy, slow or down it stays in ``pending`` and is retried in the background on later decisions. Counters: ``submitted``
+    (handed to the agent), ``acked``, ``failed`` (agent raised or refused), ``dropped`` (agent busy/unavailable at submission)."""
+    EVERY = 16  # decisions between performance signals (background; the real agent may be slow)
+    ACK_WAIT_S = 2.0  # how long match_end waits for the outcome signal to be acknowledged
+    MAX_PENDING = 32
+
+    def __init__(self, host: RealAgentHost, path: str | None = None, caps: dict | None = None, persist_path: str | None = None) -> None:
         super().__init__(path)
         self.host = host
         self.count: dict = {}
-        self.sent = 0
+        self.run_id = uuid.uuid4().hex[:8]  # signal ids are unique per service run (the agent keeps ids it has seen)
+        self.submitted = self.acked = self.failed = self.dropped = self.persisted = 0
+        self.pending: dict = {}  # signal_id -> signal not yet acknowledged
+        self.persist_path = persist_path or os.path.join(os.path.dirname(os.path.abspath(self.path)), "learning_memory.pt")
+        self.persist_error: str | None = None
         self.last_guidance: Any = None
         self.last_error: str | None = None
 
-    def _send(self, signal: dict) -> None:
+    @property
+    def sent(self) -> int:  # kept for older callers/tests
+        return self.submitted
+
+    def counters(self) -> dict:
+        return {"submitted": self.submitted, "acked": self.acked, "failed": self.failed, "dropped": self.dropped, "pending": len(self.pending),
+                "persisted": self.persisted, "lastError": self.last_error or self.persist_error}
+
+    # ------------------------------------------------------------------ delivery
+    def _persist(self, agent: Any) -> None:
+        """Best-effort durability barrier: write the agent's learning memory to a fixed file (atomic, overwritten, never accumulating)."""
+        mem = getattr(getattr(agent, "learning_factory", None), "learning_memory", None)
+        if mem is None or not hasattr(mem, "save_checkpoint"):
+            return
+        try:
+            mem.save_checkpoint(self.persist_path)
+            self.persisted += 1
+            self.persist_error = None
+        except Exception as e:  # noqa: BLE001 - the signal itself is already recorded
+            self.persist_error = f"{type(e).__name__}: {str(e)[:160]}"
+
+    def _job(self, signal: dict, persist: bool):
         def job(agent: Any) -> Any:
-            out = agent.perform_task({"mode": "observe", "signal": signal})
-            self.last_guidance = (out or {}).get("learning", {}).get("adaptive_guidance") if isinstance(out, dict) else None
+            try:
+                out = agent.perform_task({"mode": "observe", "signal": signal})
+                learning = out.get("learning") if isinstance(out, dict) else None
+                status = learning.get("status") if isinstance(learning, dict) else None
+                if status not in ("recorded", "duplicate"):
+                    raise RuntimeError(f"signal not acknowledged (status={status!r})")
+            except Exception as e:  # noqa: BLE001
+                self.failed += 1
+                self.last_error = f"{type(e).__name__}: {str(e)[:160]}"
+                raise
+            self.acked += 1
+            self.pending.pop(signal["signal_id"], None)
+            self.last_guidance = learning.get("adaptive_guidance")
+            if persist:
+                self._persist(agent)
             return out
 
-        if self.host.background("learning", job):
-            self.sent += 1
+        return job
 
+    def _send(self, signal: dict, persist: bool = False) -> bool:
+        """Background delivery (never delays a decision)."""
+        if self.host.background("learning", self._job(signal, persist)):
+            self.submitted += 1
+            return True
+        self.dropped += 1
+        return False
+
+    def _retry_pending(self) -> None:
+        if self.pending and self.host.usable("learning"):
+            self._send(next(iter(self.pending.values())), persist=True)
+
+    def _deliver_outcome(self, signal: dict) -> str:
+        """Outcome signals matter: wait briefly for the acknowledgement, otherwise keep the signal for retries."""
+        if len(self.pending) >= self.MAX_PENDING:
+            self.pending.pop(next(iter(self.pending)))
+        self.pending[signal["signal_id"]] = signal
+        if not self.host.usable("learning"):
+            return "pending (agent unavailable)"
+        try:
+            self.host.call("learning", self._job(signal, True), self.ACK_WAIT_S)
+        except (StageBusy, StageUnavailable) as e:  # never reached the agent
+            self.dropped += 1
+            return f"pending ({_why(e)})"
+        except Exception as e:  # noqa: BLE001 - timed out or refused: retried later
+            self.submitted += 1
+            return f"pending ({_why(e)})"
+        self.submitted += 1
+        return "acked"
+
+    # ------------------------------------------------------------------ stage
     def run(self, ctx: Context) -> None:
         super().run(ctx)
         obs, sit = ctx.obs, ctx.situation
-        key = (obs["seed"], obs["team"])
+        key = episode_key(obs)
         n = self.count[key] = self.count.get(key, 0) + 1
         if len(self.count) > 64:
             self.count.clear()
         if n % self.EVERY == 1 and self.host.usable("learning"):
-            self._send({"signal_id": f"gangup-{obs['seed']}-{obs['team']}-{obs['tick']}", "source_agent": "gangup.slai", "kind": "performance",
+            self._send({"signal_id": f"gangup-{self.run_id}-{key[0]}-{obs['team']}-{obs['tick']}", "source_agent": "gangup.slai", "kind": "performance",
                         "metric": "strength_ratio", "value": float(sit["ratio"]), "direction": "higher_better", "confidence": float(sit["info_conf"]),
                         "provenance": "execution", "context": {"game": "gangup", "team": obs["team"], "phase": "early" if obs["time"] < 60 else "late"},
-                        "metadata": {"seed": obs["seed"], "tick": obs["tick"], "novelty": ctx.flags.get("scene", {}).get("novelty")}})
+                        "metadata": {"seed": obs["seed"], "episode": obs.get("episode"), "tick": obs["tick"], "novelty": ctx.flags.get("scene", {}).get("novelty")}})
+        elif n % self.EVERY == 8:
+            self._retry_pending()
         _mark(ctx, "learning", "real" if self.host.usable("learning") else "lite (agent unavailable)")
 
-    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08) -> dict:
-        usage = dict(self.usage.get((seed, team), {}))
-        out = super().update_from_match(seed, team, winner, lr)
-        if self.host.usable("learning"):
-            self._send({"signal_id": f"gangup-end-{seed}-{team}", "source_agent": "gangup.slai", "kind": "outcome", "metric": "match_result",
-                        "value": float(out["reward"]), "direction": "higher_better", "confidence": 1.0, "validated": True, "provenance": "execution",
-                        "context": {"game": "gangup", "team": team}, "metadata": {"seed": seed, "winner": winner, "objectiveUsage": usage}})
-        out["realLearningSignals"] = self.sent
+    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None) -> dict:
+        out = super().update_from_match(seed, team, winner, lr, episode=episode)
+        if "duplicate" not in out and "ignored" not in out:
+            self.count.pop((episode or seed, team), None)
+            sig = {"signal_id": f"gangup-end-{self.run_id}-{episode or seed}-{team}-{out['matches']}", "source_agent": "gangup.slai", "kind": "outcome",
+                   "metric": "match_result", "value": float(out["reward"]), "direction": "higher_better", "confidence": 1.0, "validated": True,
+                   "provenance": "execution", "context": {"game": "gangup", "team": team},
+                   "metadata": {"seed": seed, "episode": episode, "winner": winner, "objectiveUsage": out.get("usage", {})}}
+            out["delivery"] = self._deliver_outcome(sig)
+        out["realLearning"] = self.counters()
         return out
 
 

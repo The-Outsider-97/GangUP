@@ -86,7 +86,16 @@
       <label class="check"><input id="m-fog" type="checkbox" checked> Show field-of-view shading</label>
     </div>
     <div id="slai-status" class="status">Checking SLAI service…</div>
-    <button id="m-start" class="primary">Start match</button>
+    <details class="audio">
+      <summary>Sound</summary>
+      <div class="audio-grid">
+        <label>Master <input type="range" min="0" max="100" data-audio="master"></label>
+        <label>Effects <input type="range" min="0" max="100" data-audio="sfx"></label>
+        <label>Music <input type="range" min="0" max="100" data-audio="music"></label>
+        <label class="check"><input type="checkbox" data-audio="mute"> Mute (M)</label>
+      </div>
+    </details>
+    <button id="m-start" class="primary" data-nosound>Start match</button>
     <details>
       <summary>Controls</summary>
       <table class="keys" id="keys-menu"></table>
@@ -98,9 +107,18 @@
 <div id="pause" class="screen hidden">
   <div class="panel small">
     <h2>Paused</h2>
-    <button id="p-resume" class="primary">Resume <kbd>Space</kbd></button>
-    <button id="p-surrender">Surrender</button>
-    <button id="p-quit">Quit to menu</button>
+    <button id="p-resume" class="primary" data-nosound>Resume <kbd>Space</kbd></button>
+    <button id="p-surrender" data-nosound>Surrender</button>
+    <button id="p-quit" data-nosound>Quit to menu</button>
+    <details class="audio">
+      <summary>Sound</summary>
+      <div class="audio-grid">
+        <label>Master <input type="range" min="0" max="100" data-audio="master"></label>
+        <label>Effects <input type="range" min="0" max="100" data-audio="sfx"></label>
+        <label>Music <input type="range" min="0" max="100" data-audio="music"></label>
+        <label class="check"><input type="checkbox" data-audio="mute"> Mute (M)</label>
+      </div>
+    </details>
     <details open>
       <summary>Controls</summary>
       <table class="keys" id="keys-pause"></table>

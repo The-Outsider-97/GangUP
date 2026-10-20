@@ -56,6 +56,7 @@ export function buildObservation(m, team, difficulty, deadlineMs) {
         schema: OBS_SCHEMA,
         version: '0.3',
         seed: m.seed,
+        episode: m.episodeId,
         tick: m.tick,
         time: ticksToSec(m.tick),
         generation: gen,

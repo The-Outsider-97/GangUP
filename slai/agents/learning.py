@@ -13,10 +13,13 @@ import threading
 
 from ..features import MAIN_OBJECTIVES, SQUAD_OBJECTIVES
 from ..geometry import dist
+from ..schema import episode_key
 from .base import Agent, Context
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 CLIP = 0.5
+MAX_LIVE = 32  # games tracked at once (older, abandoned ones are evicted)
+KEEP_EPISODES = 256  # processed episode ids remembered (and persisted) so a retried match_end cannot be learned twice
 
 
 def _clip(v: float, lim: float = CLIP) -> float:
@@ -30,9 +33,9 @@ class LearningAgent(Agent):
         self.path = path or os.path.join(DATA_DIR, "adaptive.json")
         self.lock = threading.Lock()
         self.profile = {"squad_bias": {o: 0.0 for o in SQUAD_OBJECTIVES}, "main_bias": {o: 0.0 for o in MAIN_OBJECTIVES},
-                        "matches": 0, "wins": 0, "losses": 0, "draws": 0}
-        self.live: dict = {}  # (seed, team) -> online stats
-        self.usage: dict = {}  # (seed, team) -> objective counts this match
+                        "matches": 0, "wins": 0, "losses": 0, "draws": 0, "episodes": []}
+        self.live: dict = {}  # episode key -> online stats
+        self.usage: dict = {}  # episode key -> {"squad": {objective: n}, "main": {objective: n}} for this match
         self.load()
 
     # ------------------------------------------------------------------ persistence
@@ -46,6 +49,9 @@ class LearningAgent(Agent):
                         self.profile[k][o] = _clip(float(v))
             for k in ("matches", "wins", "losses", "draws"):
                 self.profile[k] = int(d.get(k, 0))
+            eps = d.get("episodes", [])
+            if isinstance(eps, list):
+                self.profile["episodes"] = [str(e) for e in eps][-KEEP_EPISODES:]
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
@@ -60,7 +66,9 @@ class LearningAgent(Agent):
 
     # ------------------------------------------------------------------ online opponent model
     def observe(self, obs: dict, sit: dict) -> dict:
-        key = (obs["seed"], obs["team"])
+        key = episode_key(obs)
+        if key not in self.live and len(self.live) >= MAX_LIVE:
+            self.live.pop(next(iter(self.live)))  # abandoned games (quit, timeout) must not accumulate
         st = self.live.setdefault(key, {"main_exposed": 0.0, "flank": 0.0, "turtle": 0.0, "n": 0})
         a = 0.15
         em = sit["enemy_main"]
@@ -77,7 +85,7 @@ class LearningAgent(Agent):
         return st
 
     def bias(self, obs: dict) -> dict:
-        key = (obs["seed"], obs["team"])
+        key = episode_key(obs)
         st = self.live.get(key, {"main_exposed": 0.0, "flank": 0.0, "turtle": 0.0})
         sb = dict(self.profile["squad_bias"])
         mb = dict(self.profile["main_bias"])
@@ -96,24 +104,40 @@ class LearningAgent(Agent):
                 d[k] = _clip(d[k])
         return {"squad": sb, "main": mb}
 
-    def note_usage(self, obs: dict, objectives: dict) -> None:
-        key = (obs["seed"], obs["team"])
-        u = self.usage.setdefault(key, {})
+    def note_usage(self, obs: dict, objectives: dict, main_objective: str | None = None) -> None:
+        key = episode_key(obs)
+        if key not in self.usage and len(self.usage) >= MAX_LIVE:
+            self.usage.pop(next(iter(self.usage)))
+        u = self.usage.setdefault(key, {"squad": {}, "main": {}})
         for obj in objectives.values():
-            u[obj] = u.get(obj, 0) + 1
+            u["squad"][obj] = u["squad"].get(obj, 0) + 1
+        if main_objective:
+            u["main"][main_objective] = u["main"].get(main_objective, 0) + 1
 
     # ------------------------------------------------------------------ post-match learning
-    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08) -> dict:
+    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None) -> dict:
+        """One reward-weighted step per *episode*. ``episode`` is the client's game id; without it the call is only accepted for a
+        game this service actually played (decisions were seen for that seed/team), which is then consumed - so a repeated or
+        stray call cannot count a match twice. The result carries ``duplicate`` / ``ignored`` when nothing was learned."""
         with self.lock:
-            key = (seed, team)
-            usage = self.usage.pop(key, {})
-            self.live.pop(key, None)
+            key = (episode or seed, team)
             reward = 0.0 if winner is None else (1.0 if winner == team else -1.0)
-            total = sum(usage.values()) or 1
-            mean = 1.0 / len(SQUAD_OBJECTIVES)
-            for o in SQUAD_OBJECTIVES:
-                share = usage.get(o, 0) / total
-                self.profile["squad_bias"][o] = _clip(self.profile["squad_bias"][o] + lr * reward * (share - mean))
+            token = f"{episode}:{team}" if episode else None  # both teams of one episode may be SLAI-controlled
+            if token and token in self.profile["episodes"]:
+                return {"duplicate": True, "reward": reward, "matches": self.profile["matches"], "episode": episode}
+            usage = self.usage.pop(key, None)
+            seen = self.live.pop(key, None)
+            if not episode and usage is None and seen is None:
+                return {"ignored": "no active episode for this seed/team", "reward": reward, "matches": self.profile["matches"]}
+            usage = usage or {"squad": {}, "main": {}}
+            for head, objs, bias in (("squad", SQUAD_OBJECTIVES, self.profile["squad_bias"]), ("main", MAIN_OBJECTIVES, self.profile["main_bias"])):
+                counts = usage[head]
+                total = sum(counts.values())
+                if not total:
+                    continue  # no decisions of this kind: nothing to attribute
+                mean = 1.0 / len(objs)
+                for o in objs:
+                    bias[o] = _clip(bias[o] + lr * reward * (counts.get(o, 0) / total - mean))
             self.profile["matches"] += 1
             if winner is None:
                 self.profile["draws"] += 1
@@ -121,8 +145,10 @@ class LearningAgent(Agent):
                 self.profile["wins"] += 1
             else:
                 self.profile["losses"] += 1
+            if token:
+                self.profile["episodes"] = (self.profile["episodes"] + [token])[-KEEP_EPISODES:]
             self.save()
-            return {"reward": reward, "matches": self.profile["matches"]}
+            return {"reward": reward, "matches": self.profile["matches"], "episode": episode, "usage": usage}
 
     def run(self, ctx: Context) -> None:
         self.observe(ctx.obs, ctx.situation)

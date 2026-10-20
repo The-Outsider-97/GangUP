@@ -35,6 +35,11 @@ def _need(d: Any, key: str, path: str, typ: Any = None) -> Any:
     return v
 
 
+def episode_key(obs: dict) -> tuple:
+    """Identity of one game for per-match state: the client's episode id when present, else the seed (seeds can repeat across games)."""
+    return (obs.get("episode") or obs["seed"], obs["team"])
+
+
 def validate_observation(obs: Any) -> None:
     """Reject malformed observations before any agent touches them."""
     if not isinstance(obs, dict):
@@ -46,6 +51,9 @@ def validate_observation(obs: Any) -> None:
             raise SchemaError(f"obs.{k} must be a finite number")
     if obs["team"] not in (0, 1):
         raise SchemaError("obs.team must be 0 or 1")
+    ep = obs.get("episode")
+    if ep is not None and not (isinstance(ep, str) and 0 < len(ep) <= 64):
+        raise SchemaError("obs.episode must be a non-empty string of at most 64 characters")
     own = _need(obs, "own", "obs", dict)
     main = _need(own, "main", "obs.own", dict)
     for k in ("id", "x", "y", "theta", "hp", "shield"):

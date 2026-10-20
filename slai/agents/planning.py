@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..features import main_features, squad_features
 from ..geometry import clamp, dist
+from ..schema import episode_key
 from ..policy import TacticalDecisionPolicy, legal_main_objectives, legal_squad_objectives
 from ..scripted import scripted_main_objective, scripted_squad_objective, scripted_stance
 from .base import Agent, Context
@@ -27,13 +28,29 @@ def consequence_adjust(obs: dict, sit: dict, sq: dict, objective: str) -> float:
     return adj
 
 
-def decide_stance(sit: dict) -> str:
-    """Q/E stance from a Lanchester-style strength comparison (defensive when weak or in danger)."""
-    if sit["danger"] or sit["own_n"] < 5:
+STANCE_MIN_DWELL = 180  # ticks (3 s): a stance is kept at least this long unless the Main is in danger
+STANCE_ENTER_RATIO = 0.4  # go defensive below this strength ratio ...
+STANCE_EXIT_RATIO = 0.55  # ... and only return to offensive above this one (hysteresis band)
+
+
+def decide_stance(sit: dict, current: str | None = None, held: int | None = None) -> str:
+    """Q/E stance from a Lanchester-style strength comparison (defensive when weak or in danger).
+
+    Without ``current`` this is the plain threshold rule. With the current stance and how long it has been held (ticks) it adds
+    hysteresis: danger always wins at once, otherwise a change needs STANCE_MIN_DWELL ticks and, for the return to offensive, a
+    higher ratio and one more soldier than the trigger, so a borderline situation cannot flip the stance on every decision."""
+    if sit["danger"]:
         return "defensive"
-    if sit["visible_count"] and sit["ratio"] < 0.4:
-        return "defensive"
-    return "offensive"
+    if current is None:
+        if sit["own_n"] < 5 or (sit["visible_count"] and sit["ratio"] < STANCE_ENTER_RATIO):
+            return "defensive"
+        return "offensive"
+    weak = sit["own_n"] < 5 or bool(sit["visible_count"] and sit["ratio"] < STANCE_ENTER_RATIO)
+    recovered = sit["own_n"] >= 6 and not (sit["visible_count"] and sit["ratio"] < STANCE_EXIT_RATIO)
+    want = "defensive" if weak else "offensive" if recovered else current
+    if want != current and held is not None and held < STANCE_MIN_DWELL:
+        return current
+    return want
 
 
 class PlanningAgent(Agent):
@@ -41,12 +58,26 @@ class PlanningAgent(Agent):
 
     def __init__(self, policy: TacticalDecisionPolicy) -> None:
         self.policy = policy
+        self.stance_since: dict = {}  # episode key -> (stance, tick it was first seen)
+
+    def _stance(self, obs: dict, sit: dict) -> str:
+        key, cur, tick = episode_key(obs), obs["own"]["stance"], obs["tick"]
+        prev = self.stance_since.get(key)
+        if prev is None or prev[0] != cur or tick < prev[1]:
+            prev = (cur, tick)
+            if len(self.stance_since) > 64:
+                self.stance_since.clear()
+            self.stance_since[key] = prev
+        return decide_stance(sit, cur, tick - prev[1])
+
+    def forget(self, key: tuple) -> None:
+        self.stance_since.pop(key, None)
 
     def run(self, ctx: Context) -> None:
         obs, sit = ctx.obs, ctx.situation
         bias = ctx.flags.get("bias", {"squad": {}, "main": {}})
         kn_bias = self._knowledge_bias(ctx)
-        ctx.stance = decide_stance(sit)
+        ctx.stance = self._stance(obs, sit)
         use_model = self.policy.trained
         if not use_model:
             ctx.notes.append("policy untrained: scripted objectives")

@@ -42,6 +42,7 @@ export class Match {
     arena;
     nav;
     seed;
+    episodeId;
     config;
     rngSpread;
     rngSpawn;
@@ -65,11 +66,12 @@ export class Match {
     constructor(config) {
         this.config = config;
         this.seed = config.seed >>> 0;
+        this.episodeId = config.episodeId ?? `seed-${this.seed}`;
         this.rngSpread = new Rng(deriveSeed(this.seed, 'spread'));
         this.rngSpawn = new Rng(deriveSeed(this.seed, 'spawn'));
         this.arena = makeArena();
         this.nav = new NavGrid(this.arena);
-        this.replay = { version: 1, seed: this.seed, config: { humanTeam: config.humanTeam }, inputs: [], events: [] };
+        this.replay = { version: 1, seed: this.seed, config: { humanTeam: config.humanTeam, episodeId: this.episodeId }, inputs: [], events: [] };
         const mkTeam = (id) => ({
             id,
             mainId: -1,

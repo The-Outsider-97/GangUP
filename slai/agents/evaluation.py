@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 
+from ..schema import episode_key
 from .base import Agent, Context
 
 
@@ -22,7 +23,7 @@ class EvaluationAgent(Agent):
 
     def run(self, ctx: Context) -> None:
         obs, sit = ctx.obs, ctx.situation
-        key = (obs["seed"], obs["team"])
+        key = episode_key(obs)
         snap = {"tick": obs["tick"], "ratio": sit["ratio"], "hp": sit["hp_frac"], "own_n": sit["own_n"], "objs": dict(ctx.objectives)}
         with self.lock:
             prev = self.prev.get(key)
@@ -46,9 +47,9 @@ class EvaluationAgent(Agent):
         for fb in ctx.flags.get("feedback", []):
             ctx.notes.append(f"engine rejected {fb.get('command')}: {fb.get('reason')}")
 
-    def forget(self, seed: int, team: int) -> None:
+    def forget(self, key: tuple) -> None:
         with self.lock:
-            self.prev.pop((seed, team), None)
+            self.prev.pop(key, None)
 
     def report(self) -> dict:
         with self.lock:

@@ -17,7 +17,7 @@ export class AIDirector {
     cfg;
     stats = {
         decisions: 0, requests: 0, ok: 0, timeouts: 0, errors: 0, invalid: 0, stale: 0, fallbackDecisions: 0,
-        actionsApplied: 0, actionsRejected: 0, lastLatencyMs: 0, avgLatencyMs: 0, lastPolicy: 'baseline', lastAgents: [], online: false, degraded: false,
+        actionsApplied: 0, actionsRejected: 0, lastLatencyMs: 0, avgLatencyMs: 0, lastPolicy: 'baseline', lastService: '', lastDecisionId: '', lastAgents: [], online: false, degraded: false,
     };
     onDecision;
     nextDecision = 0;
@@ -26,6 +26,7 @@ export class AIDirector {
     latencySum = 0;
     feedback = [];
     lastRejects = new Map();
+    finished = false;
     constructor(team, cfg) {
         this.team = team;
         this.cfg = cfg;
@@ -43,6 +44,39 @@ export class AIDirector {
                 this.lastRejects.set(res.reason ?? 'unknown', (this.lastRejects.get(res.reason ?? 'unknown') ?? 0) + 1);
             }
         });
+    }
+    /** Identity and provenance of this controller for the replay / result screen: who played, and which path served its decisions. */
+    describe() {
+        const s = this.stats;
+        return {
+            team: this.team, kind: this.cfg.mode, difficulty: this.cfg.difficulty, decisions: s.decisions, slaiAnswered: s.ok,
+            fallbackDecisions: s.fallbackDecisions, lastPolicy: s.lastPolicy, lastService: s.lastService || undefined, lastDecisionId: s.lastDecisionId || undefined,
+        };
+    }
+    /**
+     * Report the finished match to SLAI so its Learning agent can adapt, exactly once per episode. Only when SLAI actually answered at
+     * least one decision (a match played entirely by the fallback teaches SLAI nothing). Safe to call repeatedly; resolves to the service's
+     * answer, or null when nothing was sent.
+     */
+    async finish(m, timeoutMs = 4000) {
+        if (this.finished || this.cfg.mode !== 'slai' || !m.result.over || this.stats.ok === 0)
+            return null;
+        this.finished = true;
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), timeoutMs);
+        try {
+            const res = await fetch(this.cfg.baseUrl + '/v1/match_end', {
+                method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+                body: JSON.stringify({ seed: m.seed, team: this.team, winner: m.result.winner, episode: m.episodeId }),
+            });
+            return res.ok ? (await res.json()) : null;
+        }
+        catch {
+            return null;
+        }
+        finally {
+            clearTimeout(timer);
+        }
     }
     due(m) {
         return !m.result.over && m.tick >= this.nextDecision && !this.inflight;
@@ -109,6 +143,8 @@ export class AIDirector {
                 this.latencySum += latency;
                 this.stats.avgLatencyMs = this.latencySum / this.stats.ok;
                 this.stats.lastPolicy = body.meta?.policy ?? 'slai';
+                this.stats.lastService = body.meta?.service ?? '';
+                this.stats.lastDecisionId = body.meta?.decisionId ?? '';
                 this.stats.lastAgents = body.meta?.agents ?? [];
                 const actions = body.actions.slice(0, obs.budget.maxActions);
                 this.apply(m, obs, actions, 'slai');
@@ -162,5 +198,14 @@ export class AIDirector {
             m.submit(toEnvelope(a, this.team, t.cmd, source, Math.max(m.tick, obs.tick + latency)));
         }
     }
+}
+/** Write who controlled each team (and the AI provenance) into the replay. Human teams are those without a director. */
+export function recordControllers(m, directors) {
+    const out = [];
+    for (const team of [0, 1]) {
+        const d = directors.find((x) => x.team === team);
+        out.push(d ? d.describe() : { team, kind: 'human' });
+    }
+    m.replay.config.controllers = out;
 }
 //# sourceMappingURL=director.js.map

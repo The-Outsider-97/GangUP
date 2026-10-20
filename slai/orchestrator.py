@@ -20,7 +20,7 @@ from .agents.planning import PlanningAgent
 from .agents.safety import SafetyAgent
 from .policy import DEFAULT_WEIGHTS, TacticalDecisionPolicy
 from .resolver import main_actions, squad_actions
-from .schema import make_action, make_response, validate_observation
+from .schema import episode_key, make_action, make_response, validate_observation
 from .scripted import scripted_main_objective, scripted_squad_objective, scripted_stance
 
 
@@ -139,13 +139,14 @@ class Orchestrator:
         self._compose(ctx)
         run(self.safety)
         run(self.evaluation)
-        self.learning.note_usage(obs, ctx.objectives)
+        self.learning.note_usage(obs, ctx.objectives, ctx.main_objective)
 
         total_ms = (time.perf_counter() - t0) * 1000.0
         self.observability.record(ctx, total_ms)
         meta = {
             "policy": f"tdp-{self.policy.version}" if self.policy.trained and not ctx.flags.get("fallback") else "scripted-fallback",
             "service": __version__,
+            "decisionId": f"{obs.get('episode') or obs['seed']}:{obs['team']}:{obs['tick']}:{obs['generation']}",
             "agents": ran,
             "latencyMs": round(total_ms, 2),
             "objectives": {str(k): v for k, v in ctx.objectives.items()},
@@ -194,12 +195,14 @@ class Orchestrator:
     def _emergency(self, obs: dict, ctx: Context, t0: float) -> dict:
         """Perception itself failed: hold everything and say so. The engine keeps the last legal orders."""
         self.observability.note_error()
-        meta = {"policy": "emergency-hold", "fallback": True, "errors": ctx.errors, "agents": [], "latencyMs": round((time.perf_counter() - t0) * 1000, 2)}
+        meta = {"policy": "emergency-hold", "service": __version__, "decisionId": f"{obs.get('episode') or obs['seed']}:{obs['team']}:{obs['tick']}:{obs['generation']}", "fallback": True, "errors": ctx.errors, "agents": [], "latencyMs": round((time.perf_counter() - t0) * 1000, 2)}
         return make_response(obs, [], meta)
 
-    def match_end(self, seed: int, team: int, winner: int | None) -> dict:
-        self.evaluation.forget(seed, team)
-        return self.learning.update_from_match(seed, team, winner)
+    def match_end(self, seed: int, team: int, winner: int | None, episode: str | None = None) -> dict:
+        key = (episode or seed, team)
+        self.evaluation.forget(key)
+        self.planning.forget(key)
+        return self.learning.update_from_match(seed, team, winner, episode=episode)
 
     def stats(self) -> dict:
         s = self.observability.snapshot()
@@ -213,7 +216,7 @@ class Orchestrator:
                 "knowledge": {"queries": self.knowledge.queries, "applicableButNotRetrieved": self.knowledge.misses},
                 "collaborative": {"arbitrations": self.collaborative.arbitrations, "attackVetoes": self.collaborative.vetoes},
                 "safety": {"reviews": self.safety.reviews, "blocks": self.safety.blocks, "cacheHits": self.safety.cache_hits, "mode": self.safety.mode, "dispatched": self.safety.dispatched, "last": self.safety.last},
-                "learning": {"signalsSent": self.learning.sent, "lastGuidance": self.learning.last_guidance},
+                "learning": {**self.learning.counters(), "lastGuidance": self.learning.last_guidance},
             }
         return s
 
