@@ -39,12 +39,27 @@ export interface MatchConfig {
   seed: number;
   /** Team controlled by a human; null makes both sides AI-controlled (headless/self-play). */
   humanTeam: Team | null;
+  /** Identity of this game, assigned by the caller (never derived inside the deterministic core). Defaults to `seed-<seed>`. */
+  episodeId?: string;
+}
+
+/** Who controlled a team and what served its decisions (written when the match ends; not part of the simulation). */
+export interface ControllerRecord {
+  team: Team;
+  kind: 'human' | 'slai' | 'baseline';
+  difficulty?: string;
+  decisions?: number;
+  slaiAnswered?: number;
+  fallbackDecisions?: number;
+  lastPolicy?: string;
+  lastService?: string;
+  lastDecisionId?: string;
 }
 
 export interface ReplayRecord {
   version: number;
   seed: number;
-  config: { humanTeam: Team | null };
+  config: { humanTeam: Team | null; episodeId: string; controllers?: ControllerRecord[] };
   inputs: { tick: number; team: Team; kind: string; data: unknown }[];
   events: GameEvent[];
 }
@@ -82,6 +97,7 @@ export class Match {
   readonly arena: Arena;
   readonly nav: NavGrid;
   readonly seed: number;
+  readonly episodeId: string;
   readonly config: MatchConfig;
   readonly rngSpread: Rng;
   readonly rngSpawn: Rng;
@@ -106,11 +122,12 @@ export class Match {
   constructor(config: MatchConfig) {
     this.config = config;
     this.seed = config.seed >>> 0;
+    this.episodeId = config.episodeId ?? `seed-${this.seed}`;
     this.rngSpread = new Rng(deriveSeed(this.seed, 'spread'));
     this.rngSpawn = new Rng(deriveSeed(this.seed, 'spawn'));
     this.arena = makeArena();
     this.nav = new NavGrid(this.arena);
-    this.replay = { version: 1, seed: this.seed, config: { humanTeam: config.humanTeam }, inputs: [], events: [] };
+    this.replay = { version: 1, seed: this.seed, config: { humanTeam: config.humanTeam, episodeId: this.episodeId }, inputs: [], events: [] };
     const mkTeam = (id: Team): TeamState => ({
       id,
       mainId: -1,

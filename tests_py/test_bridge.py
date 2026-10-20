@@ -173,10 +173,32 @@ class FakeSafety(Fake):
         return {"decision": self.decision, "approved": self.decision == "allow", "risk_score": 0.1 if self.decision == "allow" else 0.9, "risk_level": "low"}
 
 
+class FakeMemory:
+    def __init__(self):
+        self.saved: list = []
+
+    def save_checkpoint(self, path=None):
+        self.saved.append(path)
+        return str(path)
+
+
 class FakeLearning(Fake):
+    """Answers like LearningAgent.perform_task(observe): status recorded / duplicate (by signal id) or whatever ``status`` is set to."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.seen: set = set()
+        self.status = "recorded"
+        self.learning_factory = types.SimpleNamespace(learning_memory=FakeMemory())
+
     def perform_task(self, td):
         self._enter(td)
-        return {"status": "ok", "mode": "observe", "learning": {"adaptive_guidance": {"g": 1}}}
+        if self.status != "recorded":
+            return {"status": "ok", "mode": "observe", "learning": {"status": self.status}}
+        sid = td["signal"]["signal_id"]
+        dup = sid in self.seen
+        self.seen.add(sid)
+        return {"status": "ok", "mode": "observe", "learning": {"status": "duplicate" if dup else "recorded", "adaptive_guidance": {"g": 1}}}
 
 
 class FakeEvaluation(Fake):

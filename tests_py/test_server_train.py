@@ -73,6 +73,11 @@ class ServerTests(unittest.TestCase):
     def test_match_end(self):
         self.assertEqual(post(self.base + "/v1/match_end", {"seed": 1, "team": 1, "winner": 1})[0], 200)
         self.assertEqual(post(self.base + "/v1/match_end", {"nope": 1})[0], 400)
+        self.assertEqual(post(self.base + "/v1/match_end", {"seed": 1, "team": 1, "winner": 7})[0], 400)  # winner must be 0, 1 or null
+        self.assertEqual(post(self.base + "/v1/match_end", {"seed": 1, "team": 1, "winner": 1, "episode": ""})[0], 400)
+        code, body = post(self.base + "/v1/match_end", {"seed": 1, "team": 1, "winner": 1, "episode": "e-http"})
+        self.assertEqual(code, 200)
+        self.assertEqual(post(self.base + "/v1/match_end", {"seed": 1, "team": 1, "winner": 1, "episode": "e-http"})[1].get("duplicate"), True)
 
     def test_static_serving_and_traversal_blocked(self):
         with urllib.request.urlopen(self.base + "/", timeout=5) as r:

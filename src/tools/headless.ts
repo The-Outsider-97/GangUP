@@ -5,7 +5,8 @@
  *   tsx src/tools/headless.ts --matches 20 --max-sec 600 --mode baseline
  *   tsx src/tools/headless.ts --matches 10 --mode slai --url http://127.0.0.1:8765 --log data/obs.jsonl
  */
-import { AIDirector, type DecisionRecord } from '../ai/director.js';
+import { AIDirector, recordControllers, type DecisionRecord } from '../ai/director.js';
+import { newEpisodeId } from '../ai/episode.js';
 import { Match } from '../engine/match.js';
 import type { Team } from '../engine/types.js';
 import * as fs from 'node:fs';
@@ -36,8 +37,10 @@ export async function runMatch(opts: {
   difficulty: 'easy' | 'normal' | 'hard';
   onDecision?: (r: DecisionRecord) => void;
   swapped?: boolean;
+  /** report the finished episode to SLAI so it learns from it (default true; --no-learn keeps its profile untouched, e.g. for benchmarks) */
+  learn?: boolean;
 }): Promise<{ summary: MatchSummary; match: Match; directors: AIDirector[] }> {
-  const m = new Match({ seed: opts.seed, humanTeam: null });
+  const m = new Match({ seed: opts.seed, humanTeam: null, episodeId: newEpisodeId() });
   const directors = ([0, 1] as Team[]).map((t) => {
     const d = new AIDirector(t, { difficulty: opts.difficulty, mode: opts.modes[t], baseUrl: opts.url, deadlineMs: 1500 });
     d.attach(m);
@@ -50,6 +53,9 @@ export async function runMatch(opts: {
     m.step();
   }
   const timedOut = !m.result.over;
+  recordControllers(m, directors);
+  // finalize the episode for every SLAI-controlled team (a timed-out match has no result, so it is not reported)
+  if (opts.learn !== false) for (const d of directors) await d.finish(m);
   const kills: [number, number] = [0, 0];
   for (const a of m.actors.values()) if (a.kind === 'main') kills[a.team] = a.stats.kills;
   return {
@@ -79,6 +85,7 @@ async function main() {
   const logPath = arg('log', '');
   const seed0 = Number(arg('seed', '1'));
   const slaiTeam = Number(arg('slai-team', '1')) as Team;
+  const learn = !process.argv.includes('--no-learn');
   const log = logPath ? logPath : null;
   const wins = [0, 0];
   let draws = 0;
@@ -91,7 +98,7 @@ async function main() {
     const sl = (swap ? 1 - slaiTeam : slaiTeam) as Team;
     const modes: ['slai' | 'baseline', 'slai' | 'baseline'] = mode === 'slai' ? (sl === 0 ? ['slai', 'baseline'] : ['baseline', 'slai']) : ['baseline', 'baseline'];
     const buf: DecisionRecord[] = [];
-    const { summary } = await runMatch({ seed, maxSec, modes, url, difficulty, onDecision: log ? (r) => buf.push(r) : undefined });
+    const { summary } = await runMatch({ seed, maxSec, modes, url, difficulty, learn, onDecision: log ? (r) => buf.push(r) : undefined });
     if (log) {
       const outcome = summary.winner === null ? 'draw' : 'win';
       const lines: string[] = [];

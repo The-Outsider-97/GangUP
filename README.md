@@ -66,6 +66,7 @@ hard 2 Hz / 0.15 s); it never changes damage, accuracy, vision, health or spawni
 | F, right click ally · L, right click member | Follow ally · set squad leader |
 | Z X C V · H · G | Defend / Press / Harass / Disengage · Hold · cycle Compact → Line → Spread |
 | Esc / Space | Cancel targeting or open menu / pause |
+| M | Mute / unmute all sound (volume sliders: menu and pause screen) |
 
 HUD (GDD 15.2): Main HP/shield and streak shield bonus, weapon/magazine/reserve, sword strain and overload, stance, soldier count,
 reinforcement countdown and the **wave arithmetic** line (`Base 5 + streak 1 = 6; capacity ok; received 6`), kill-streak progress / 30 s window /
@@ -73,6 +74,18 @@ reinforcement countdown and the **wave arithmetic** line (`Base 5 + streak 1 = 6
 engaged / retreating / blocked badges). Enemies are drawn only while the allied team can currently see them; an enemy lost behind cover
 leaves a dashed `?` marker at its *last seen* position for at most 3 s. Green uses round outlines, Red diamond outlines; squads carry numbers
 and selection rings, so colour is never the only cue (GDD 15.4).
+
+## Effects and sound
+
+**Hit feedback** (`src/client/effects.ts`, drawn by `renderer.ts`; visual only, never part of the simulation or the replay): whoever is hit is knocked back
+a few pixels and vibrates for about 70 ms (never fewer than two rendered frames) and flashes white; the shooter recoils against its aim, a swordsman lunges along the swing.
+Further effects: muzzle flashes, impact sparks (red for bodies, blue for shields, grey for cover), death bursts (larger for a Main), supply and wave pulses, reload
+and streak rings, a camera tremor and a red screen-edge pulse when *your* Main is hurt, and a heartbeat vignette below 20 HP (stronger below 10). Every number is in `IMPACT`.
+
+**Sound** (`src/client/audio/`): the code is complete, the sound files are yours to add. `cues.ts` lists the 60 cues (the ones you asked for are marked *requested*), `gameAudio.ts`
+maps engine events and the state of your Main to them, `manager.ts` is the mixer (Master / Effects / Music, mute, rate limits, random variants, music crossfade, unlock
+after the first click). Put `shoot_main.ogg` (or `shoot_main_1.ogg`, `_2` ... for variants) into `assets/audio/`, run `npm run build`, reload. A cue without a file is silent and
+harmless. `npm run audio:check` shows what is still missing, `assets/audio/README.md` lists every cue with the moment it plays. Enemy sounds respect the fog of war.
 
 ## Where the GDD lives in the code
 
@@ -94,8 +107,9 @@ and selection rings, so colour is never the only cue (GDD 15.4).
 
 ```bash
 npm run typecheck        # strict TypeScript
-npm test                 # 33 tests: engine rules & boundaries, determinism, 50v50 stress, AI fuzzing, director fallbacks, client logic
-npm run test:py          # 83 tests: schema, safety, policy, orchestrator, HTTP server, trainer, real-agent bridge (5 of them run the genuine Collaborative/Observability agents when a SLAI checkout is present)
+npm test                 # 56 tests: engine rules & boundaries, determinism, 50v50 stress, AI fuzzing, director fallbacks, episode/finish reporting, client logic, hit effects, sound cues
+npm run test:py          # 100 tests: schema, safety, policy, orchestrator, HTTP server, trainer, episode-idempotent learning, stance hysteresis, real-agent bridge (some run the genuine Collaborative/Observability agents when a SLAI checkout is present)
+npm run audio:check      # which sound cues still have no file in assets/audio
 npm run headless -- --matches 10 --mode slai --url http://127.0.0.1:8765   # SLAI vs scripted baseline
 ```
 
@@ -120,4 +134,4 @@ See `docs/SLAI.md` for what is learned, what is not, and the honest evaluation.
   can be snowballed by an early Main kill. These are tuning questions, not engine bugs.
 * Balance (scripted vs scripted, 30 matches, seeds 700–729, 7-minute cap): Green 11, Red 14, and 5 matches undecided at the cap (average decided length ≈ 3 min). Stalemates can therefore happen;
   the GDD defines no match time limit, so none was added.
-* Remapping keys (GDD 15.1 "SHOULD") and sound are not implemented. The prototype uses one mirrored arena.
+* Remapping keys (GDD 15.1 "SHOULD") is not implemented, and no sound files are shipped (the sound system is ready, see *Effects and sound*). The prototype uses one mirrored arena.

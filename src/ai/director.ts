@@ -1,4 +1,4 @@
-import type { Match } from '../engine/match.js';
+import type { ControllerRecord, Match } from '../engine/match.js';
 import type { Team } from '../engine/types.js';
 import { translateAction, toEnvelope } from './actions.js';
 import { buildObservation, type Difficulty } from './observation.js';
@@ -37,6 +37,8 @@ export interface DirectorStats {
   lastLatencyMs: number;
   avgLatencyMs: number;
   lastPolicy: string;
+  lastService: string;
+  lastDecisionId: string;
   lastAgents: string[];
   online: boolean;
   degraded: boolean;
@@ -56,7 +58,7 @@ export interface DecisionRecord {
 export class AIDirector {
   stats: DirectorStats = {
     decisions: 0, requests: 0, ok: 0, timeouts: 0, errors: 0, invalid: 0, stale: 0, fallbackDecisions: 0,
-    actionsApplied: 0, actionsRejected: 0, lastLatencyMs: 0, avgLatencyMs: 0, lastPolicy: 'baseline', lastAgents: [], online: false, degraded: false,
+    actionsApplied: 0, actionsRejected: 0, lastLatencyMs: 0, avgLatencyMs: 0, lastPolicy: 'baseline', lastService: '', lastDecisionId: '', lastAgents: [], online: false, degraded: false,
   };
   onDecision?: (r: DecisionRecord) => void;
   private nextDecision = 0;
@@ -65,6 +67,7 @@ export class AIDirector {
   private latencySum = 0;
   private feedback: { command: string; reason: string }[] = [];
   private lastRejects = new Map<string, number>();
+  private finished = false;
 
   constructor(readonly team: Team, public cfg: DirectorConfig) {}
 
@@ -78,6 +81,38 @@ export class AIDirector {
         this.lastRejects.set(res.reason ?? 'unknown', (this.lastRejects.get(res.reason ?? 'unknown') ?? 0) + 1);
       }
     });
+  }
+
+  /** Identity and provenance of this controller for the replay / result screen: who played, and which path served its decisions. */
+  describe(): ControllerRecord {
+    const s = this.stats;
+    return {
+      team: this.team, kind: this.cfg.mode, difficulty: this.cfg.difficulty, decisions: s.decisions, slaiAnswered: s.ok,
+      fallbackDecisions: s.fallbackDecisions, lastPolicy: s.lastPolicy, lastService: s.lastService || undefined, lastDecisionId: s.lastDecisionId || undefined,
+    };
+  }
+
+  /**
+   * Report the finished match to SLAI so its Learning agent can adapt, exactly once per episode. Only when SLAI actually answered at
+   * least one decision (a match played entirely by the fallback teaches SLAI nothing). Safe to call repeatedly; resolves to the service's
+   * answer, or null when nothing was sent.
+   */
+  async finish(m: Match, timeoutMs = 4000): Promise<Record<string, unknown> | null> {
+    if (this.finished || this.cfg.mode !== 'slai' || !m.result.over || this.stats.ok === 0) return null;
+    this.finished = true;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.cfg.baseUrl + '/v1/match_end', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ seed: m.seed, team: this.team, winner: m.result.winner, episode: m.episodeId }),
+      });
+      return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   due(m: Match): boolean {
@@ -143,6 +178,8 @@ export class AIDirector {
         this.latencySum += latency;
         this.stats.avgLatencyMs = this.latencySum / this.stats.ok;
         this.stats.lastPolicy = body.meta?.policy ?? 'slai';
+        this.stats.lastService = body.meta?.service ?? '';
+        this.stats.lastDecisionId = body.meta?.decisionId ?? '';
         this.stats.lastAgents = body.meta?.agents ?? [];
         const actions = body.actions.slice(0, obs.budget.maxActions);
         this.apply(m, obs, actions, 'slai');
@@ -190,4 +227,14 @@ export class AIDirector {
       m.submit(toEnvelope(a, this.team, t.cmd, source, Math.max(m.tick, obs.tick + latency)));
     }
   }
+}
+
+/** Write who controlled each team (and the AI provenance) into the replay. Human teams are those without a director. */
+export function recordControllers(m: Match, directors: AIDirector[]): void {
+  const out: ControllerRecord[] = [];
+  for (const team of [0, 1] as Team[]) {
+    const d = directors.find((x) => x.team === team);
+    out.push(d ? d.describe() : { team, kind: 'human' });
+  }
+  m.replay.config.controllers = out;
 }

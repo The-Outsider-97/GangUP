@@ -19,6 +19,7 @@ export const KEY_HELP: [string, string][] = [
   ['Z / X / C / V', 'Doctrine: Defend / Press / Harass / Disengage'],
   ['H / G', 'Hold position / cycle Compact → Line → Spread'],
   ['Esc / Space', 'Cancel targeting or open menu / pause'],
+  ['M', 'Mute / unmute all sound'],
 ];
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T {

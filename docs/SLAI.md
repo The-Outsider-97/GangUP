@@ -13,7 +13,7 @@ with *commands* that the TypeScript engine validates exactly like human input.
 ## Protocol
 
 * `POST /v1/decide` body `{observation, feedback[]}` → `{schema:"gangup.act.v1", generation, actions[], meta}`
-* `POST /v1/match_end` `{seed, team, winner}` → Learning agent updates its opening profile
+* `POST /v1/match_end` `{seed, team, winner, episode?}` → Learning agent updates its opening profile, **once per episode** (see *Episodes and learning guarantees*)
 * `GET /v1/health`, `GET /v1/stats` (latency percentiles, fallback counts, agent errors, rejection reasons)
 * Every observation carries a **generation**; every action echoes it plus `issuedAt` / `expiresAt` ticks. The engine rejects stale generations,
   expired actions, non-owned units, hidden targets, unreachable destinations and AI surrender (R1.2, R10.2). Safety re-checks the same rules before
@@ -30,7 +30,7 @@ policy) and each real agent contributes its own capability:
 | Stage | Real agent (`src/agents`) | What GangUP asks of it | Changes the decision? |
 |---|---|---|---|
 | Perception | `PerceptionAgent` | `perform_task(inference, text)` on a text rendering of the tactical snapshot → scene embedding → *novelty* vs the previous decision | Telemetry / learning signal |
-| Learning | `LearningAgent` | `perform_task(observe, LearningSignal)`: a performance signal every 16 decisions, an outcome signal at match end (background) | Telemetry + the agent's persistent signal store. The GangUP-specific bias learning (`adaptive.json`) stays in GangUP |
+| Learning | `LearningAgent` | `perform_task(observe, LearningSignal)`: a performance signal every 16 decisions (background), an outcome signal at match end (awaited briefly, then retried until acknowledged) | Telemetry + the agent's persistent signal store. The GangUP-specific bias learning (`adaptive.json`) stays in GangUP |
 | Knowledge | `KnowledgeAgent` | `add_document` for each validated tactic, `retrieve(tags)` per decision | **Yes**: only retrieved tactics are applied (a tactic that is applicable but not retrieved is counted in `/v1/stats`) |
 | Planning | `PlanningAgent` | HTN: every candidate squad objective is a `Task` (abstract → primitive steps with preconditions over world-state facts); `decompose_task` per decision | **Yes**: infeasible objectives are masked before the policy chooses |
 | Collaborative | `CollaborativeAgent` | `coordinate_tasks` arbitrates contested roles (supply, flank lanes, escort; squads are the agents, distance rank is their load); `assess_risk` second-guesses attacks | **Yes** (see the note on the risk floor) |
@@ -75,6 +75,26 @@ Notes from integrating them:
      after the star imports, or give `planning_errors` an `__all__`.
   3. `src/agents/perception/modules/tokenizer.py`: `BytePairEncoder.bpe` loops `min(pairs, ...)` with no guard for a word the merges folded into a single symbol →
      `ValueError: min() iterable argument is empty` for any text containing such a word. Upstream fix: `while len(word) > 1:` around the merge loop.
+
+## Episodes and learning guarantees
+
+Every game has an **episode id** (a UUID made by the client or the headless runner; the deterministic engine never invents one). It travels in `obs.episode` and in
+`/v1/match_end`, and it is what per-match state is keyed by, so two games with the same seed (a rematch, two tabs, a replay) never share state.
+
+* **Idempotent.** The profile (`adaptive.json`) remembers the last 256 processed `episode:team` tokens. A retried `match_end` returns `{"duplicate": true}` and changes nothing, also
+  after a restart. Without an episode id the call is accepted only for a game this service actually played, and only once. The two teams of one episode are separate results.
+* **Only real games count.** The client and `headless.ts` report an outcome only when SLAI answered at least one decision (`AIDirector.finish`), once, and never for a timed-out match.
+  Headless runs finalize their episodes too (SLAI matches adapt the profile; pass `--no-learn` to `headless.ts` to leave it untouched, e.g. for benchmarks).
+* **Both heads learn.** `update_from_match` nudges the squad-objective biases *and* the Main-objective biases (`main_bias` was read before but never updated), each by
+  `lr × reward × (share used − uniform)`, clipped to ±0.5.
+* **Acknowledged delivery to the real LearningAgent.** A signal counts as `acked` only when the agent answers `recorded` (or `duplicate`). The outcome signal is awaited for up to 2 s;
+  if the agent is busy, slow or down it stays `pending` and is retried in the background. `/v1/stats → realUse.learning` shows `submitted / acked / failed / dropped / pending / persisted`
+  and the last error; the `match_end` answer carries `delivery` (`acked` or `pending (reason)`). After an acknowledged outcome the agent's learning memory is written to
+  `slai/data/learning_memory.pt` (one fixed file, atomic, overwritten; a durability barrier, not restored automatically). Signal ids are unique per service run and episode.
+* **Stance hysteresis.** `decide_stance` keeps a stance for at least 3 s unless the Main is in danger, and returns to offensive only above a strength ratio of 0.55 (it goes defensive below 0.4)
+  with one more soldier than the trigger, so a borderline fight no longer flips the stance on every decision. The scripted baseline keeps its plain rule as the documented control.
+* **Provenance.** Every response carries `meta.decisionId` (`episode:team:tick:generation`), the policy version and the stage sources. The replay download records `episodeId` and,
+  per team, who controlled it (human / SLAI / baseline), difficulty, how many decisions SLAI answered, how many fell back, and the last policy and decision id.
 
 ## Agents (GDD 13.2): the built-in stand-ins (`slai/agents`, `--agents lite`)
 

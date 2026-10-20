@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HumanController, type NoticeKind } from '../src/client/controller.js';
 import { buildHudModel, formatWaveArithmetic } from '../src/client/hudModel.js';
+import { IMPACT, ImpactTracker, ScreenShake, lowHpVignette } from '../src/client/effects.js';
 import { Renderer } from '../src/client/renderer.js';
 import { STREAK, sec } from '../src/engine/constants.js';
 import { processWave, registerStreakKill } from '../src/engine/economy.js';
@@ -249,4 +250,94 @@ test('renderer: draws a full frame, shows only visible enemies, never labels hid
   assert.ok(texts().includes('?'), 'a stale marker is shown instead');
   // effects from a long fight never grow without bound
   for (let i = 0; i < 20; i++) { stepN(m, 120, d); r.draw(ctl, i % 2 === 0); }
+});
+
+// ---------------------------------------------------------------------------------------------------- impact feedback
+
+test('impact tracker: the victim is pushed away and shakes for a very short time, the shooter recoils, and it all settles', () => {
+  let now = 1000;
+  const t = new ImpactTracker(() => now);
+  t.beginFrame();
+  t.hit(5, 1, 0, 1); // damage travelling in +x
+  const o = t.offset(5);
+  assert.ok(o.x > 1, `pushed along the shot direction (${o.x})`);
+  assert.ok(t.flash(5) > 0);
+  t.recoil(6, 1, 0);
+  assert.ok(t.offset(6).x < 0, 'the shooter recoils against its aim');
+  t.lunge(7, 0, 1);
+  assert.ok(t.offset(7).y > 0, 'a sword attacker lunges along the swing');
+  assert.deepEqual(t.offset(99), { x: 0, y: 0 });
+  // still visible for the minimum number of frames even if the clock does not move, then gone
+  for (let i = 0; i < IMPACT.minFrames; i++) t.beginFrame();
+  now += IMPACT.victimMs + 1;
+  t.beginFrame();
+  assert.deepEqual(t.offset(5), { x: 0, y: 0 });
+  assert.equal(t.flash(5), 0);
+  assert.equal(t.active, 0);
+});
+
+test('impact tracker: vibration is bounded, deterministic, and a recoil never overrides a stronger hit reaction', () => {
+  let now = 0;
+  const a = new ImpactTracker(() => now), b = new ImpactTracker(() => now);
+  for (const t of [a, b]) { t.beginFrame(); t.hit(3, 0, 1, 1); t.beginFrame(); }
+  assert.deepEqual(a.offset(3), b.offset(3));
+  const o = a.offset(3);
+  assert.ok(Math.abs(o.x) <= IMPACT.jitter + 1e-9 && o.y <= IMPACT.victimPush + IMPACT.jitter);
+  a.recoil(3, 0, -1); // would push the other way, but the hit is stronger
+  assert.ok(a.offset(3).y > 0);
+});
+
+test('screen shake: only after the player\'s Main is hurt, bounded, and it ends', () => {
+  let now = 0;
+  const s = new ScreenShake(() => now);
+  s.beginFrame();
+  assert.deepEqual(s.offset(), { x: 0, y: 0 });
+  assert.equal(s.hurtPulse(), 0);
+  s.hurtMain(1);
+  s.beginFrame();
+  const o = s.offset();
+  assert.ok(Math.abs(o.x) <= IMPACT.shakeMax && Math.abs(o.y) <= IMPACT.shakeMax && (o.x !== 0 || o.y !== 0));
+  assert.ok(s.hurtPulse() > 0);
+  for (let i = 0; i < 4; i++) s.beginFrame();
+  now += IMPACT.shakeMs + IMPACT.hurtMs;
+  assert.deepEqual(s.offset(), { x: 0, y: 0 });
+  assert.equal(s.hurtPulse(), 0);
+});
+
+test('low-HP vignette: off above 20, a slow pulse under 20 and a stronger one under 10', () => {
+  assert.equal(lowHpVignette(60, 3), 0);
+  assert.equal(lowHpVignette(20, 3), 0);
+  assert.equal(lowHpVignette(0, 3), 0);
+  const peak = (hp: number) => Math.max(...Array.from({ length: 120 }, (_, f) => lowHpVignette(hp, f)));
+  assert.ok(peak(15) > 0 && peak(5) > peak(15));
+});
+
+test('renderer: shots and sword hits nudge both sides, only the player\'s Main shakes the camera', () => {
+  const m = fresh(83, 0);
+  const { canvas, calls } = mockCanvas();
+  const r = new Renderer(canvas, m, 0);
+  r.setFog(false);
+  const me = m.mainOf(0), foe = m.mainOf(1);
+  const soldier = m.soldiers(0)[0];
+  put(me, 20, 20, 0); put(foe, 34, 20, Math.PI);
+  stepN(m, 14);
+  r.draw(null);
+  // the enemy shoots the player's Main
+  m.emit('shot', { actor: foe.id, x0: foe.x, y0: foe.y, x1: me.x, y1: me.y, result: 'body', victim: me.id, dmg: 12 });
+  r.draw(null);
+  assert.ok(Math.hypot(r.impact.offset(me.id).x, r.impact.offset(me.id).y) > 0, 'victim displaced');
+  assert.ok(Math.hypot(r.shake.offset().x, r.shake.offset().y) > 0, 'camera shakes for the player\'s Main');
+  // the player's own soldier hitting an enemy: victim nudged, no camera shake
+  const shakeBefore = r.shake.hurtPulse();
+  m.emit('shot', { actor: soldier.id, x0: soldier.x, y0: soldier.y, x1: foe.x, y1: foe.y, result: 'body', victim: foe.id, dmg: 8 });
+  assert.equal(r.shake.hurtPulse() <= shakeBefore, true);
+  // a sword swing
+  me.mode = 'sword';
+  m.emit('sword', { actor: me.id, kind: 'swipe', hits: [foe.id] });
+  assert.ok(r.impact.active >= 1);
+  calls.length = 0;
+  r.draw(null);
+  assert.ok(calls.some((c) => c.fn === 'fillRect'), 'edge pulse / frames drawn');
+  // many frames later everything has settled
+  for (let i = 0; i < 40; i++) r.draw(null);
 });

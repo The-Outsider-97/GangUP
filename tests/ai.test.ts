@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { AIDirector } from '../src/ai/director.js';
+import { AIDirector, recordControllers } from '../src/ai/director.js';
+import { newEpisodeId } from '../src/ai/episode.js';
+import { Match } from '../src/engine/match.js';
 import { toEnvelope, translateAction } from '../src/ai/actions.js';
 import { buildObservation } from '../src/ai/observation.js';
 import { scriptedPolicy } from '../src/ai/scripted.js';
@@ -165,4 +167,70 @@ test('director survives malformed, slow and stale SLAI responses', async () => {
   const stale = await run((_b, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ schema: 'gangup.act.v1', generation: -5, actions: [{ command: 'SetStance', stance: 'offensive', generation: -5, issuedAt: 0, expiresAt: 10 ** 9 }] })); });
   assert.ok(stale.stale > 0, JSON.stringify(stale));
   assert.equal(stale.actionsApplied, 0);
+});
+
+test('every game has an episode id that reaches the observation and the replay (never affects the simulation)', () => {
+  const a = new Match({ seed: 5, humanTeam: null, episodeId: 'ep-A' });
+  const b = new Match({ seed: 5, humanTeam: null, episodeId: 'ep-B' });
+  assert.equal(buildObservation(a, 1, 'normal', 400).episode, 'ep-A');
+  assert.equal(a.replay.config.episodeId, 'ep-A');
+  assert.equal(fresh(9).episodeId, 'seed-9');
+  assert.notEqual(newEpisodeId(), newEpisodeId());
+  // the same seed with another id plays out identically
+  const da = baselineDirectors(a);
+  const db = baselineDirectors(b);
+  stepN(a, 900, da);
+  stepN(b, 900, db);
+  assert.equal(JSON.stringify(a.replay.events), JSON.stringify(b.replay.events));
+});
+
+test('the replay records who controlled each team and which path served the AI', () => {
+  const m = fresh(12, 0);
+  const d = new AIDirector(1, { difficulty: 'hard', mode: 'slai', baseUrl: '', deadlineMs: 400 });
+  d.attach(m);
+  d.stats.decisions = 10;
+  d.stats.ok = 7;
+  d.stats.fallbackDecisions = 3;
+  d.stats.lastPolicy = 'tdp-x';
+  d.stats.lastDecisionId = 'ep:1:600:3';
+  recordControllers(m, [d]);
+  const c = m.replay.config.controllers!;
+  assert.deepEqual(c[0], { team: 0, kind: 'human' });
+  assert.equal(c[1].kind, 'slai');
+  assert.equal(c[1].slaiAnswered, 7);
+  assert.equal(c[1].fallbackDecisions, 3);
+  assert.equal(c[1].lastDecisionId, 'ep:1:600:3');
+});
+
+test('finish() reports a finished match to SLAI exactly once, and only if SLAI actually played', async () => {
+  const bodies: any[] = [];
+  const srv = await mock((b, res) => { bodies.push(JSON.parse(b)); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"reward":1}'); });
+  const mk = (mode: 'slai' | 'baseline') => new AIDirector(1, { difficulty: 'hard', mode, baseUrl: srv.url, deadlineMs: 400 });
+  const over = (): Match => { const m = new Match({ seed: 3, humanTeam: null, episodeId: 'ep-fin' }); m.result = { over: true, winner: 1, reason: 'test', tick: 5 }; return m; };
+
+  const unplayed = mk('slai'); // SLAI never answered: nothing to learn from
+  assert.equal(await unplayed.finish(over()), null);
+  const baseline = mk('baseline');
+  baseline.stats.ok = 5;
+  assert.equal(await baseline.finish(over()), null);
+  const running = mk('slai');
+  running.stats.ok = 5;
+  assert.equal(await running.finish(new Match({ seed: 3, humanTeam: null })), null); // not over yet
+  assert.equal(bodies.length, 0);
+
+  const d = mk('slai');
+  d.stats.ok = 5;
+  const m = over();
+  assert.deepEqual(await d.finish(m), { reward: 1 });
+  assert.equal(await d.finish(m), null); // once
+  assert.deepEqual(bodies, [{ seed: 3, team: 1, winner: 1, episode: 'ep-fin' }]);
+  srv.close();
+});
+
+test('finish() never throws when the service is down', async () => {
+  const d = new AIDirector(1, { difficulty: 'hard', mode: 'slai', baseUrl: 'http://127.0.0.1:9', deadlineMs: 400 });
+  d.stats.ok = 1;
+  const m = new Match({ seed: 3, humanTeam: null });
+  m.result = { over: true, winner: null, reason: 'draw', tick: 1 };
+  assert.equal(await d.finish(m, 500), null);
 });

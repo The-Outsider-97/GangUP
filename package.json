@@ -10,6 +10,7 @@
     "test": "tsx --test tests/*.test.ts",
     "test:py": "python3 -m unittest discover -s tests_py -t . -v",
     "play": "npm run build && python3 -m slai.server",
+    "audio:check": "tsc -p tsconfig.build.json && node tools/audio-manifest.mjs",
     "headless": "tsx src/tools/headless.ts"
   },
   "devDependencies": {

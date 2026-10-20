@@ -1,4 +1,7 @@
-import { AIDirector } from '../ai/director.js';
+import { AIDirector, recordControllers } from '../ai/director.js';
+import { newEpisodeId } from '../ai/episode.js';
+import { AudioManager } from './audio/manager.js';
+import { GameAudio } from './audio/gameAudio.js';
 import type { Difficulty } from '../ai/observation.js';
 import { DT } from '../engine/constants.js';
 import { Match } from '../engine/match.js';
@@ -30,11 +33,15 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 /** One running match: engine + AI directors + input + renderer, advanced by a fixed 60 Hz accumulator. */
+/** One mixer for the whole page (menu music continues across screens; settings are remembered). */
+export const audio = new AudioManager();
+
 export class Game {
   readonly m: Match;
   readonly ctl: HumanController | null;
   readonly renderer: Renderer;
   readonly directors: AIDirector[] = [];
+  readonly sound: GameAudio;
   paused = false;
   private acc = 0;
   private lastFrame = 0;
@@ -46,7 +53,7 @@ export class Game {
 
   constructor(readonly opts: Options, readonly hud: Hud, readonly canvas: HTMLCanvasElement, private onEnd: (g: Game) => void, private onMenu: () => void) {
     const spectate = opts.mode === 'spectate';
-    this.m = new Match({ seed: opts.seed, humanTeam: spectate ? null : HUMAN });
+    this.m = new Match({ seed: opts.seed, humanTeam: spectate ? null : HUMAN, episodeId: newEpisodeId() });
     this.renderer = new Renderer(canvas, this.m, HUMAN);
     this.renderer.setFog(opts.fog && !spectate);
     this.ctl = spectate ? null : new HumanController(this.m, HUMAN, (msg, kind) => this.hud.toast(msg, kind === 'bad' ? 'bad' : kind === 'warn' ? 'warn' : 'info'));
@@ -58,6 +65,8 @@ export class Game {
     };
     if (spectate) { mk(0, 'baseline'); mk(1, 'slai'); } else mk(AI_TEAM, opts.mode === 'slai' ? 'slai' : 'baseline');
 
+    this.sound = new GameAudio(this.m, HUMAN, audio);
+    audio.setMusic('game');
     this.m.commandListeners.push((env, res) => {
       if (env.source !== 'human' || res.ok) return;
       this.hud.toast(REASONS[res.reason ?? ''] ?? `Order rejected: ${res.reason}`, 'bad');
@@ -147,8 +156,9 @@ export class Game {
     });
   }
 
-  setPaused(p: boolean): void {
+  setPaused(p: boolean, quiet = false): void {
     if (this.ended) return;
+    if (!quiet) this.sound.setPaused(p);
     this.paused = p;
     if (p) this.ctl?.releaseAll();
     $('pause').classList.toggle('hidden', !p);
@@ -157,8 +167,10 @@ export class Game {
 
   surrender(): void {
     if (!this.ctl) return;
+    this.sound.surrender();
     this.m.submit({ source: 'human', team: HUMAN, cmd: { t: 'Surrender' }, issuedAt: this.m.tick });
-    this.setPaused(false);
+    this.sound.setPaused(false, true);
+    this.setPaused(false, true);
   }
 
   // ------------------------------------------------------------------ loop
@@ -178,6 +190,7 @@ export class Game {
       }
       if (steps === 8) this.acc = 0; // never spiral: drop the backlog instead of fast-forwarding
     }
+    this.sound.update();
     this.renderer.draw(this.ctl, this.paused);
     this.hudClock += dt;
     if (this.hudClock > 90) {
@@ -195,6 +208,7 @@ export class Game {
 
   dispose(): void {
     cancelAnimationFrame(this.raf);
+    this.sound.dispose();
     for (const d of this.disposers) d();
     this.disposers = [];
     this.ctl?.releaseAll();
@@ -256,6 +270,8 @@ function startMatch(opts: Options): void {
 function showMenu(): void {
   game?.dispose();
   game = null;
+  audio.play('to_menu');
+  audio.setMusic('menu');
   $('app').classList.add('hidden');
   $('pause').classList.add('hidden');
   $('result').classList.add('hidden');
@@ -282,17 +298,62 @@ function showResult(g: Game): void {
   if (dir && g.opts.mode !== 'baseline') rows.push(['SLAI decisions / fallback', dir.stats.decisions, dir.stats.fallbackDecisions]);
   $('r-stats').innerHTML = rows.map((r2, i) => `<tr>${r2.map((c, j) => (i === 0 || j === 0 ? `<td><b>${c}</b></td>` : `<td>${c}</td>`)).join('')}</tr>`).join('');
   $('result').classList.remove('hidden');
-  // report the outcome so SLAI can adapt its opening profile (only meaningful when it actually played)
-  if (g.opts.mode !== 'baseline') {
-    void fetch(g.opts.url.replace(/\/$/, '') + '/v1/match_end', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ seed: m.seed, team: AI_TEAM, winner: r.winner }),
-    }).catch(() => undefined);
+  // stamp the controllers into the replay and report the outcome so SLAI can adapt (once per episode; only if SLAI actually played)
+  recordControllers(m, g.directors);
+  for (const d of g.directors) void d.finish(m);
+}
+
+/** Sound settings: every [data-audio] control (menu and pause screen) edits the same mixer. */
+function bindAudioControls(): void {
+  const els = [...document.querySelectorAll<HTMLInputElement>('[data-audio]')];
+  const sync = () => {
+    for (const e of els) {
+      const k = e.dataset.audio as 'master' | 'sfx' | 'music' | 'mute';
+      if (k === 'mute') e.checked = audio.settings.muted;
+      else e.value = String(Math.round(audio.settings[k] * 100));
+    }
+  };
+  for (const e of els) {
+    e.addEventListener('input', () => {
+      const k = e.dataset.audio as 'master' | 'sfx' | 'music' | 'mute';
+      if (k === 'mute') audio.setMuted(e.checked);
+      else audio.set(k, Number(e.value) / 100);
+      sync();
+    });
   }
+  sync();
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyM' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
+    if (e.target instanceof HTMLSelectElement) return;
+    audio.toggleMuted();
+    sync();
+  });
+}
+
+/** Browsers start audio only after a user gesture: unlock on the first click / key press, then start the menu music. */
+function armAudio(): void {
+  const events = ['pointerdown', 'keydown'] as const;
+  const attempt = (): void => {
+    void audio.unlock().then(() => {
+      if (!audio.report().unlocked) return;
+      for (const ev of events) window.removeEventListener(ev, attempt, true);
+    });
+  };
+  for (const ev of events) window.addEventListener(ev, attempt, true);
+  document.addEventListener('click', (e) => {
+    const b = (e.target as Element | null)?.closest?.('button');
+    if (b && !b.hasAttribute('data-nosound')) audio.play('ui_click');
+  });
+  void audio.load(); // decoding needs no user gesture, so the files are ready when the first click unlocks playback
+  audio.setMusic('menu');
+  (window as unknown as { __gangupAudio?: unknown }).__gangupAudio = { audio, report: () => audio.report() }; // console: __gangupAudio.report()
 }
 
 function init(): void {
   fillKeyTables();
+  bindAudioControls();
+  armAudio();
   ($('m-url') as HTMLInputElement).value = location.protocol.startsWith('http') ? location.origin : 'http://127.0.0.1:8765';
   ($('m-url') as HTMLInputElement).addEventListener('change', () => void checkService());
   $('m-start').addEventListener('click', () => startMatch(readOptions()));

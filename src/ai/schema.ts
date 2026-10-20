@@ -40,6 +40,8 @@ export interface Observation {
   schema: typeof OBS_SCHEMA;
   version: '0.3';
   seed: number;
+  /** id of this game (a seed can repeat); echoed back to SLAI so per-match state and learning are keyed per episode */
+  episode?: string;
   tick: number;
   time: number;
   generation: number;
@@ -112,6 +114,9 @@ export interface DecideResponse {
   actions: AIAction[];
   meta?: {
     policy?: string;
+    service?: string;
+    decisionId?: string;
+    mode?: string;
     agents?: string[];
     latencyMs?: number;
     objectives?: Record<string, string>;
