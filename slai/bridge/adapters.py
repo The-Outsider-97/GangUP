@@ -287,8 +287,9 @@ class RealLearning(LearningAgent):
             self._retry_pending()
         _mark(ctx, "learning", "real" if self.host.usable("learning") else "lite (agent unavailable)")
 
-    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None) -> dict:
-        out = super().update_from_match(seed, team, winner, lr, episode=episode)
+    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None,
+                          apply_bias: bool = True) -> dict:
+        out = super().update_from_match(seed, team, winner, lr, episode=episode, apply_bias=apply_bias)
         if "duplicate" not in out and "ignored" not in out:
             self.count.pop((episode or seed, team), None)
             sig = {"signal_id": f"gangup-end-{self.run_id}-{episode or seed}-{team}-{out['matches']}", "source_agent": "gangup.slai", "kind": "outcome",
@@ -301,32 +302,45 @@ class RealLearning(LearningAgent):
 
 
 # ====================================================================== Knowledge
-class RealKnowledge(KnowledgeAgent):
-    """Tactics are indexed in, and retrieved from, the real KnowledgeAgent; the domain only checks applicability."""
-    PREFIX = "gangup:"
+def _make_store(path: str, tactics: list):
+    """Seam for tests: the governed tactics store (SLAI's KnowledgeRepository) for this library."""
+    from .knowledge_store import TacticStore
+    return TacticStore(path, tactics)
 
-    def __init__(self, host: RealAgentHost, path: str | None = None, caps: dict | None = None) -> None:
+
+class RealKnowledge(KnowledgeAgent):
+    """Tactics live in SLAI's authorized knowledge repository (``assurance.KnowledgeRepository``) and are retrieved with its
+    scope-filtered retriever; the domain (``KnowledgeAgent.retrieve``) still checks that a tactic's conditions hold.
+
+    The earlier design wrote tactics through ``KnowledgeAgent.add_document`` which SLAI rightly refuses without a scope
+    (KNW-1006). That check is not weakened: this adapter holds a trusted, project-scoped ``AccessContext`` (see
+    ``knowledge_store``). The stage reports "real" only when the repository answered; otherwise it says why it fell back.
+    """
+
+    def __init__(self, host: RealAgentHost, path: str | None = None, caps: dict | None = None, db_path: str | None = None) -> None:
         super().__init__(path)
         self.host, self.caps = host, caps or {}
-        self.seeded = False
+        self.db_path = db_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "state", "knowledge.sqlite")
+        self.store: Any = None
+        self.store_error: str | None = None
         self.queries = 0
         self.misses = 0
+        self.fallbacks = 0
+        self.used = 0  # decisions in which a retrieved tactic was applied
 
-    def seed(self, agent: Any) -> None:
-        if self.seeded:
-            return
-        for t in self.tactics:
-            text = " ".join(t["when"]) + " " + t["id"].replace("-", " ")
-            agent.add_document(text, doc_id=self.PREFIX + t["id"], metadata={"gangup": True, "tactic": t["id"], "validated": True})
-        self.seeded = True
+    def _open(self) -> Any:
+        if self.store is None or not self.store.opened:
+            self.store = self.store or _make_store(os.path.abspath(self.db_path), self.tactics)
+            self.store.open()
+        return self.store
 
     def warm(self) -> bool:
-        if not self.host.usable("knowledge"):
-            return False
         try:
-            self.host.call("knowledge", self.seed, 20.0)
+            self._open()
+            self.store_error = None
             return True
-        except Exception:  # noqa: BLE001 - retried lazily on the first decision
+        except Exception as e:  # noqa: BLE001 - retried lazily on the first decision; reason stays visible
+            self.store_error = _why(e)
             return False
 
     def run(self, ctx: Context) -> None:
@@ -335,33 +349,32 @@ class RealKnowledge(KnowledgeAgent):
         applicable = self.retrieve(tags)  # validated + conditions satisfied (domain)
         if not tags:
             ctx.knowledge = []
-            _mark(ctx, "knowledge", "real" if self.host.usable("knowledge") else "lite (agent unavailable)")
+            _mark(ctx, "knowledge", "real" if self.store is not None and self.store.opened else "lite (repository not opened)")
             return
-        query = " ".join(sorted(tags))
         budget = _budget(self.host, ctx, "knowledge", self.caps)
         try:
             if budget is None:
                 raise StageTimeout("knowledge: no time left")
-
-            def job(agent: Any) -> Any:
-                self.seed(agent)
-                return agent.retrieve(query, k=len(self.tactics) + 2)
-
-            res = self.host.call("knowledge", job, budget)
-            ids = set()
-            for item in res or []:
-                doc = item[1] if isinstance(item, (tuple, list)) and len(item) == 2 else item
-                did = str((doc or {}).get("doc_id", ""))
-                if did.startswith(self.PREFIX):
-                    ids.add(did[len(self.PREFIX):])
+            t0 = time.perf_counter()
+            store = self._open()
+            ids = set(store.search(tags))
+            if time.perf_counter() - t0 > budget:
+                raise StageTimeout(f"knowledge: repository took {(time.perf_counter() - t0) * 1000:.0f} ms (> {budget * 1000:.0f} ms)")
             chosen = [t for t in applicable if t["id"] in ids]
             self.queries += 1
             self.misses += len(applicable) - len(chosen)
+            self.used += 1 if chosen else 0
             ctx.knowledge = chosen
             _mark(ctx, "knowledge", "real")
         except Exception as e:  # noqa: BLE001
+            self.fallbacks += 1
+            self.store_error = _why(e)
             ctx.knowledge = applicable
             _mark(ctx, "knowledge", f"lite ({_why(e)})")
+
+    def status(self) -> dict:
+        return {"queries": self.queries, "applicableButNotRetrieved": self.misses, "decisionsUsingRetrievedTactics": self.used,
+                "fallbacks": self.fallbacks, "lastError": self.store_error, "store": self.store.status() if self.store else None}
 
 
 # ====================================================================== Planning
@@ -379,8 +392,9 @@ HTN = {
 
 
 class RealPlanning(PlanningAgent):
-    def __init__(self, host: RealAgentHost, policy: TacticalDecisionPolicy, caps: dict | None = None) -> None:
-        super().__init__(policy)
+    def __init__(self, host: RealAgentHost, policy: TacticalDecisionPolicy, caps: dict | None = None, learner=None) -> None:
+        super().__init__(policy, learner)
+        self.masked_total = 0  # objectives the HTN decomposition ruled out (the planning stage's contribution to decisions)
         self.host, self.caps = host, caps or {}
         self.registered: dict = {}
         self.feasible: dict | None = None
@@ -455,6 +469,7 @@ class RealPlanning(PlanningAgent):
         masked = len(legal) - len(ok)
         if masked:
             ctx.flags["htn_masked"] = ctx.flags.get("htn_masked", 0) + masked
+            self.masked_total += masked
         return ok or legal  # never leave a squad without options
 
 

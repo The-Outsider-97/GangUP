@@ -64,6 +64,8 @@ def make_handler(orch: Orchestrator, dist_dir: str, quiet: bool):
                                         "agents": orch.agents_summary()})
             if path == "/v1/stats":
                 return self._json(200, orch.stats())
+            if path == "/v1/learning":
+                return self._json(200, orch.learner.status())
             return self._static(path)
 
         def do_POST(self):  # noqa: N802
@@ -93,7 +95,7 @@ def make_handler(orch: Orchestrator, dist_dir: str, quiet: bool):
                         ep = body.get("episode")
                         if ep is not None and not (isinstance(ep, str) and 0 < len(ep) <= 64):
                             raise ValueError("episode")
-                        out = orch.match_end(int(body["seed"]), int(body["team"]), body.get("winner"), ep)
+                        out = orch.match_end(int(body["seed"]), int(body["team"]), body.get("winner"), ep, bool(body.get("truncated", False)))
                     return self._json(200, out)
                 except (KeyError, ValueError, TypeError):
                     return self._json(400, {"error": "need seed, team, winner (and optionally a string episode of at most 64 characters)"})
@@ -125,12 +127,16 @@ def _abs(p: str | None) -> str | None:
 
 def serve(host: str = "127.0.0.1", port: int = 8765, dist_dir: str | None = None, weights: str = DEFAULT_WEIGHTS,
           telemetry: str | None = None, quiet: bool = False, adaptive: str | None = None, agents: str = "lite", strict: bool = False,
-          budgets: dict | None = None, slai_root: str | None = None, safety_enforcing: bool = False, enabled=None) -> ThreadingHTTPServer:
+          budgets: dict | None = None, slai_root: str | None = None, safety_enforcing: bool = False, enabled=None,
+          learning: str = "off", learning_dir: str | None = None, learning_opts: dict | None = None,
+          knowledge_db: str | None = None) -> ThreadingHTTPServer:
     # resolve every path first: loading the real agents changes the working directory to the SLAI repository root
     dist = os.path.abspath(dist_dir or os.path.join(ROOT, "dist"))
     weights, telemetry, adaptive = _abs(weights), _abs(telemetry), _abs(adaptive)
     orch = Orchestrator(weights_path=weights, adaptive_path=adaptive, telemetry_path=telemetry, agents=agents, strict=strict,
-                        budgets=budgets, slai_root=slai_root, safety_enforcing=safety_enforcing, enabled=enabled)
+                        budgets=budgets, slai_root=slai_root, safety_enforcing=safety_enforcing, enabled=enabled,
+                        learning=learning, learning_dir=_abs(learning_dir) if learning != "off" else None, learning_opts=learning_opts,
+                        knowledge_db=_abs(knowledge_db))
     srv = ThreadingHTTPServer((host, port), make_handler(orch, dist, quiet))
     srv.orchestrator = orch  # type: ignore[attr-defined]
     return srv
@@ -151,6 +157,19 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--budget", action="append", default=[], metavar="AGENT=MS",
                     help="per-call time cap for a real agent, e.g. --budget safety=400 (defaults: perception 150, knowledge 80, planning 120, collaborative 250, safety 250)")
     ap.add_argument("--only", default=None, metavar="A,B", help="load only these real agents (perception,learning,knowledge,planning,collaborative,safety,evaluation,observability); the rest use the built-in fallback")
+    ap.add_argument("--learning", choices=("off", "evaluate", "train"), default="off",
+                    help="persistent policy learning via SLAI external learning: train = sample + learn from finished games, evaluate = frozen "
+                         "restored policy (greedy, never trains), off = imitation policy only (default)")
+    ap.add_argument("--learning-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "policy"),
+                    help="state directory of the learner (checkpoints per head and schema, episodes.jsonl ledger)")
+    ap.add_argument("--knowledge-db", default=None, metavar="FILE",
+                    help="SQLite file of the tactics knowledge repository used by the real KnowledgeAgent path (default slai/data/state/knowledge.sqlite)")
+    ap.add_argument("--adaptive", default=None, help="opponent-bias profile file (default slai/data/adaptive.json); benchmarks point it at a scratch file")
+    ap.add_argument("--learning-hyper", default=None, metavar="JSON",
+                    help='learner hyperparameters, e.g. \'{"temperature": 4, "learning_rate": 0.3}\' (see slai/learner.py DEFAULT_HYPER)')
+    ap.add_argument("--learning-batch", type=int, default=4, help="finished episodes per optimizer step (train mode)")
+    ap.add_argument("--learning-shaping", type=float, default=0.3, help="weight of the potential-based shaping reward (0 = outcome only)")
+    ap.add_argument("--learning-seed", type=int, default=0, help="seed of the exploration sampler")
     ap.add_argument("--safety-enforce", action="store_true", help="let a 'block' verdict of the real SafetyAgent hold fire (default: verdicts are recorded, never enforced)")
     ap.add_argument("--safety-advisory", action="store_true", help="(default, kept for compatibility) record the real SafetyAgent's verdict, never block on it")
     args = ap.parse_args(argv)
@@ -159,8 +178,12 @@ def main(argv: list[str] | None = None) -> None:
         k, _, v = item.partition("=")
         budgets[k.strip()] = float(v)
     try:
-        srv = serve(args.host, args.port, args.dist, args.weights, args.telemetry, args.quiet, None, args.agents, args.strict_agents,
-                    budgets, args.slai_root, args.safety_enforce and not args.safety_advisory, [x.strip() for x in args.only.split(',')] if args.only else None)
+        srv = serve(args.host, args.port, args.dist, args.weights, args.telemetry, args.quiet, args.adaptive, args.agents, args.strict_agents,
+                    budgets, args.slai_root, args.safety_enforce and not args.safety_advisory, [x.strip() for x in args.only.split(',')] if args.only else None,
+                    args.learning, args.learning_dir,
+                    {"hyper": json.loads(args.learning_hyper) if args.learning_hyper else None, "min_episodes": args.learning_batch,
+                     "max_episodes": max(args.learning_batch, 8), "shaping": args.learning_shaping, "seed": args.learning_seed},
+                    args.knowledge_db)
     except RuntimeError as e:
         sys.exit(f"[slai] {e}")
     o = srv.orchestrator  # type: ignore[attr-defined]
@@ -171,6 +194,11 @@ def main(argv: list[str] | None = None) -> None:
         print("  details: GET /v1/stats -> realAgents      diagnose: python -m slai.bridge")
     else:
         print("  agents: built-in (lite). Use --agents real for the SLAI framework agents.")
+    try:  # a service stopped by `kill` (SIGTERM) shuts down as cleanly as on Ctrl+C: pending learning is flushed and checkpointed
+        import signal
+        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    except (ValueError, AttributeError):  # not the main thread / platform without SIGTERM
+        pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -4,6 +4,10 @@
  *
  *   tsx src/tools/headless.ts --matches 20 --max-sec 600 --mode baseline
  *   tsx src/tools/headless.ts --matches 10 --mode slai --url http://127.0.0.1:8765 --log data/obs.jsonl
+ *
+ * Modes: baseline (scripted vs scripted), slai (SLAI vs scripted, sides alternate), selfplay (SLAI vs SLAI; both teams are
+ * separate episodes). `--url-green` / `--url-red` send a team to a different SLAI service (policy-vs-policy matches);
+ * `--json file` appends one summary line per match (machine-readable, for the learning experiments).
  */
 import { AIDirector, recordControllers, type DecisionRecord } from '../ai/director.js';
 import { newEpisodeId } from '../ai/episode.js';
@@ -34,6 +38,8 @@ export async function runMatch(opts: {
   maxSec: number;
   modes: ['slai' | 'baseline', 'slai' | 'baseline'];
   url: string;
+  /** per-team service override (policy-vs-policy matches); defaults to `url` */
+  urls?: [string, string];
   difficulty: 'easy' | 'normal' | 'hard';
   onDecision?: (r: DecisionRecord) => void;
   swapped?: boolean;
@@ -42,7 +48,7 @@ export async function runMatch(opts: {
 }): Promise<{ summary: MatchSummary; match: Match; directors: AIDirector[] }> {
   const m = new Match({ seed: opts.seed, humanTeam: null, episodeId: newEpisodeId() });
   const directors = ([0, 1] as Team[]).map((t) => {
-    const d = new AIDirector(t, { difficulty: opts.difficulty, mode: opts.modes[t], baseUrl: opts.url, deadlineMs: 1500 });
+    const d = new AIDirector(t, { difficulty: opts.difficulty, mode: opts.modes[t], baseUrl: opts.urls?.[t] ?? opts.url, deadlineMs: 1500 });
     d.attach(m);
     if (opts.onDecision) d.onDecision = opts.onDecision;
     return d;
@@ -54,8 +60,8 @@ export async function runMatch(opts: {
   }
   const timedOut = !m.result.over;
   recordControllers(m, directors);
-  // finalize the episode for every SLAI-controlled team (a timed-out match has no result, so it is not reported)
-  if (opts.learn !== false) for (const d of directors) await d.finish(m);
+  // finalize the episode for every SLAI-controlled team; a timed-out match has no winner and is reported as truncated
+  if (opts.learn !== false) for (const d of directors) await d.finish(m, 4000, { truncated: timedOut });
   const kills: [number, number] = [0, 0];
   for (const a of m.actors.values()) if (a.kind === 'main') kills[a.team] = a.stats.kills;
   return {
@@ -79,10 +85,13 @@ export async function runMatch(opts: {
 async function main() {
   const n = Number(arg('matches', '10'));
   const maxSec = Number(arg('max-sec', '600'));
-  const mode = arg('mode', 'baseline') as 'baseline' | 'slai';
+  const mode = arg('mode', 'baseline') as 'baseline' | 'slai' | 'selfplay';
   const url = arg('url', 'http://127.0.0.1:8765');
   const difficulty = arg('difficulty', 'hard') as 'easy' | 'normal' | 'hard';
   const logPath = arg('log', '');
+  const jsonPath = arg('json', '');
+  const urlG = arg('url-green', '');
+  const urlR = arg('url-red', '');
   const seed0 = Number(arg('seed', '1'));
   const slaiTeam = Number(arg('slai-team', '1')) as Team;
   const learn = !process.argv.includes('--no-learn');
@@ -96,9 +105,15 @@ async function main() {
     // alternate sides each match so that spawn-side bias is measured separately from policy strength
     const swap = i % 2 === 1;
     const sl = (swap ? 1 - slaiTeam : slaiTeam) as Team;
-    const modes: ['slai' | 'baseline', 'slai' | 'baseline'] = mode === 'slai' ? (sl === 0 ? ['slai', 'baseline'] : ['baseline', 'slai']) : ['baseline', 'baseline'];
+    const modes: ['slai' | 'baseline', 'slai' | 'baseline'] =
+      mode === 'selfplay' ? ['slai', 'slai'] : mode === 'slai' ? (sl === 0 ? ['slai', 'baseline'] : ['baseline', 'slai']) : ['baseline', 'baseline'];
+    const urls: [string, string] | undefined = urlG || urlR ? [urlG || url, urlR || url] : undefined;
     const buf: DecisionRecord[] = [];
-    const { summary } = await runMatch({ seed, maxSec, modes, url, difficulty, learn, onDecision: log ? (r) => buf.push(r) : undefined });
+    const { summary, directors } = await runMatch({ seed, maxSec, modes, url, urls, difficulty, learn, onDecision: log ? (r) => buf.push(r) : undefined });
+    if (jsonPath) {
+      const dstat = directors.map((d) => ({ team: d.team, kind: d.cfg.mode, decisions: d.stats.decisions, answered: d.stats.ok, fallback: d.stats.fallbackDecisions, avgLatencyMs: d.stats.avgLatencyMs }));
+      fs.appendFileSync(jsonPath, JSON.stringify({ ...summary, mode, slaiTeam: mode === 'slai' ? sl : null, directors: dstat }) + '\n');
+    }
     if (log) {
       const outcome = summary.winner === null ? 'draw' : 'win';
       const lines: string[] = [];

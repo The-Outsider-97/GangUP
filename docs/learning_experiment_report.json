@@ -1,0 +1,651 @@
+{
+ "protocol": {
+  "trainSeeds": "100000+",
+  "validationSeeds": "20000..20023",
+  "testSeeds": "30000..30039",
+  "design": "each seed on both sides (mirrored); paired by seed",
+  "gateLower": 0.0,
+  "trainGames": 200
+ },
+ "training": {
+  "c1-T3-lr4": {
+   "seconds": 654,
+   "curve": [
+    {
+     "games": 20,
+     "scoreRate": 0.2,
+     "optimizerSteps": 10,
+     "heads": {
+      "squad": {
+       "step": 5,
+       "paramDelta": 0.07294640281884691,
+       "grad": 0.01823660070471173
+      },
+      "main": {
+       "step": 5,
+       "paramDelta": 0.08802473966802904,
+       "grad": 0.02200618491700726
+      }
+     }
+    },
+    {
+     "games": 40,
+     "scoreRate": 0.2,
+     "optimizerSteps": 20,
+     "heads": {
+      "squad": {
+       "step": 10,
+       "paramDelta": 0.15413530798592637,
+       "grad": 0.03853382699648159
+      },
+      "main": {
+       "step": 10,
+       "paramDelta": 0.19064518918717388,
+       "grad": 0.04766129729679346
+      }
+     }
+    },
+    {
+     "games": 60,
+     "scoreRate": 0.275,
+     "optimizerSteps": 30,
+     "heads": {
+      "squad": {
+       "step": 15,
+       "paramDelta": 0.029877043040623785,
+       "grad": 0.007469260760155948
+      },
+      "main": {
+       "step": 15,
+       "paramDelta": 0.04107696293812266,
+       "grad": 0.010269240734530663
+      }
+     }
+    },
+    {
+     "games": 80,
+     "scoreRate": 0.2,
+     "optimizerSteps": 40,
+     "heads": {
+      "squad": {
+       "step": 20,
+       "paramDelta": 0.4455867612490433,
+       "grad": 0.11139669031226083
+      },
+      "main": {
+       "step": 20,
+       "paramDelta": 0.39260391111615556,
+       "grad": 0.0981509777790389
+      }
+     }
+    },
+    {
+     "games": 100,
+     "scoreRate": 0.2,
+     "optimizerSteps": 50,
+     "heads": {
+      "squad": {
+       "step": 25,
+       "paramDelta": 0.071606102298476,
+       "grad": 0.017901525574618993
+      },
+      "main": {
+       "step": 25,
+       "paramDelta": 0.07716916497414221,
+       "grad": 0.01929229124353555
+      }
+     }
+    },
+    {
+     "games": 120,
+     "scoreRate": 0.325,
+     "optimizerSteps": 60,
+     "heads": {
+      "squad": {
+       "step": 30,
+       "paramDelta": 0.04383911240592882,
+       "grad": 0.010959778101482201
+      },
+      "main": {
+       "step": 30,
+       "paramDelta": 0.06430476053854067,
+       "grad": 0.016076190134635168
+      }
+     }
+    },
+    {
+     "games": 140,
+     "scoreRate": 0.375,
+     "optimizerSteps": 70,
+     "heads": {
+      "squad": {
+       "step": 35,
+       "paramDelta": 0.09943991764965682,
+       "grad": 0.0248599794124142
+      },
+      "main": {
+       "step": 35,
+       "paramDelta": 0.05174838758935923,
+       "grad": 0.012937096897339809
+      }
+     }
+    },
+    {
+     "games": 160,
+     "scoreRate": 0.55,
+     "optimizerSteps": 80,
+     "heads": {
+      "squad": {
+       "step": 40,
+       "paramDelta": 0.032899125270388505,
+       "grad": 0.008224781317597124
+      },
+      "main": {
+       "step": 40,
+       "paramDelta": 0.030785829052842557,
+       "grad": 0.007696457263210644
+      }
+     }
+    },
+    {
+     "games": 180,
+     "scoreRate": 0.35,
+     "optimizerSteps": 90,
+     "heads": {
+      "squad": {
+       "step": 45,
+       "paramDelta": 0.3173121875236074,
+       "grad": 0.07932804688090185
+      },
+      "main": {
+       "step": 45,
+       "paramDelta": 0.29722850213455415,
+       "grad": 0.07430712553363854
+      }
+     }
+    },
+    {
+     "games": 200,
+     "scoreRate": 0.3,
+     "optimizerSteps": 100,
+     "heads": {
+      "squad": {
+       "step": 50,
+       "paramDelta": 0.05097759161732704,
+       "grad": 0.012744397904331762
+      },
+      "main": {
+       "step": 50,
+       "paramDelta": 0.039856914189609974,
+       "grad": 0.009964228547402493
+      }
+     }
+    }
+   ],
+   "trainSummary": {
+    "games": 200,
+    "wins": 49,
+    "losses": 130,
+    "drawsOrTimeouts": 21,
+    "scoreRate": 0.2975,
+    "scoreRate95": [
+     0.23844134726233482,
+     0.3641912851345852
+    ],
+    "meanSeconds": 113.49358333333333,
+    "answeredDecisions": 45489,
+    "fallbackDecisions": 0
+   },
+   "pipeline": {
+    "decisionsRecorded": 110969,
+    "rewardEventsRecorded": 110488,
+    "episodesFinished": 200,
+    "optimizerSteps": 100,
+    "parametersChanged": true,
+    "checkpointsSaved": 100,
+    "checkpointsRestored": 0
+   },
+   "ledger": 200,
+   "heads": {
+    "squad": {
+     "trainingStep": 50,
+     "consumedEpisodes": 200,
+     "parameterHash": "c81150a423e509f4",
+     "checkpointId": "c6937eca2afa4c709a2bfdd15c8a7b75"
+    },
+    "main": {
+     "trainingStep": 50,
+     "consumedEpisodes": 200,
+     "parameterHash": "0eb804b90aa6bf45",
+     "checkpointId": "fb0a020050cc481d8275f0a70b93c3d0"
+    }
+   },
+   "config": {
+    "name": "c1-T3-lr4",
+    "hyper": {
+     "temperature": 3.0,
+     "learning_rate": 4.0,
+     "max_param_norm": 8.0,
+     "gamma": 0.999
+    }
+   }
+  },
+  "c2-T2-lr10": {
+   "seconds": 602,
+   "curve": [
+    {
+     "games": 20,
+     "scoreRate": 0.175,
+     "optimizerSteps": 10,
+     "heads": {
+      "squad": {
+       "step": 5,
+       "paramDelta": 0.2765584806689142,
+       "grad": 0.027655848066891423
+      },
+      "main": {
+       "step": 5,
+       "paramDelta": 0.2640297925812924,
+       "grad": 0.026402979258129244
+      }
+     }
+    },
+    {
+     "games": 40,
+     "scoreRate": 0.525,
+     "optimizerSteps": 20,
+     "heads": {
+      "squad": {
+       "step": 10,
+       "paramDelta": 0.24628343276029266,
+       "grad": 0.024628343276029266
+      },
+      "main": {
+       "step": 10,
+       "paramDelta": 0.22767186371231427,
+       "grad": 0.022767186371231426
+      }
+     }
+    },
+    {
+     "games": 60,
+     "scoreRate": 0.3,
+     "optimizerSteps": 30,
+     "heads": {
+      "squad": {
+       "step": 15,
+       "paramDelta": 0.12163677846427266,
+       "grad": 0.012163677846427266
+      },
+      "main": {
+       "step": 15,
+       "paramDelta": 0.17949446161037905,
+       "grad": 0.017949446161037913
+      }
+     }
+    },
+    {
+     "games": 80,
+     "scoreRate": 0.7,
+     "optimizerSteps": 40,
+     "heads": {
+      "squad": {
+       "step": 20,
+       "paramDelta": 0.3122994312542656,
+       "grad": 0.03122994312542656
+      },
+      "main": {
+       "step": 20,
+       "paramDelta": 0.6763075871065852,
+       "grad": 0.06763075871065853
+      }
+     }
+    },
+    {
+     "games": 100,
+     "scoreRate": 0.6,
+     "optimizerSteps": 50,
+     "heads": {
+      "squad": {
+       "step": 25,
+       "paramDelta": 0.1415378725107367,
+       "grad": 0.014153787251073672
+      },
+      "main": {
+       "step": 25,
+       "paramDelta": 0.22195781033217685,
+       "grad": 0.02219578103321768
+      }
+     }
+    },
+    {
+     "games": 120,
+     "scoreRate": 0.325,
+     "optimizerSteps": 60,
+     "heads": {
+      "squad": {
+       "step": 30,
+       "paramDelta": 0.11321893159991557,
+       "grad": 0.011321893159991556
+      },
+      "main": {
+       "step": 30,
+       "paramDelta": 0.09218824751662194,
+       "grad": 0.009218824751662196
+      }
+     }
+    },
+    {
+     "games": 140,
+     "scoreRate": 0.375,
+     "optimizerSteps": 70,
+     "heads": {
+      "squad": {
+       "step": 35,
+       "paramDelta": 0.8650979214232091,
+       "grad": 0.0865097921423209
+      },
+      "main": {
+       "step": 35,
+       "paramDelta": 0.14098927020630214,
+       "grad": 0.014098927020630219
+      }
+     }
+    },
+    {
+     "games": 160,
+     "scoreRate": 0.325,
+     "optimizerSteps": 80,
+     "heads": {
+      "squad": {
+       "step": 40,
+       "paramDelta": 0.2519143202855145,
+       "grad": 0.02519143202855146
+      },
+      "main": {
+       "step": 40,
+       "paramDelta": 0.2591935034210517,
+       "grad": 0.02591935034210517
+      }
+     }
+    },
+    {
+     "games": 180,
+     "scoreRate": 0.35,
+     "optimizerSteps": 90,
+     "heads": {
+      "squad": {
+       "step": 45,
+       "paramDelta": 0.12181002467903089,
+       "grad": 0.01218100246790309
+      },
+      "main": {
+       "step": 45,
+       "paramDelta": 0.3916041916840699,
+       "grad": 0.03916041916840699
+      }
+     }
+    },
+    {
+     "games": 200,
+     "scoreRate": 0.475,
+     "optimizerSteps": 100,
+     "heads": {
+      "squad": {
+       "step": 50,
+       "paramDelta": 0.20297101622923466,
+       "grad": 0.020297101622923464
+      },
+      "main": {
+       "step": 50,
+       "paramDelta": 0.17774964084193315,
+       "grad": 0.017774964084193313
+      }
+     }
+    }
+   ],
+   "trainSummary": {
+    "games": 200,
+    "wins": 73,
+    "losses": 107,
+    "drawsOrTimeouts": 20,
+    "scoreRate": 0.415,
+    "scoreRate95": [
+     0.34894169173249645,
+     0.48426212927361817
+    ],
+    "meanSeconds": 114.94758333333333,
+    "answeredDecisions": 46073,
+    "fallbackDecisions": 0
+   },
+   "pipeline": {
+    "decisionsRecorded": 104220,
+    "rewardEventsRecorded": 103758,
+    "episodesFinished": 200,
+    "optimizerSteps": 100,
+    "parametersChanged": true,
+    "checkpointsSaved": 100,
+    "checkpointsRestored": 0
+   },
+   "ledger": 200,
+   "heads": {
+    "squad": {
+     "trainingStep": 50,
+     "consumedEpisodes": 200,
+     "parameterHash": "b96175812ded1378",
+     "checkpointId": "9e9d36cc60f046aa93e635e033961eb1"
+    },
+    "main": {
+     "trainingStep": 50,
+     "consumedEpisodes": 200,
+     "parameterHash": "c887aa0c3118ac35",
+     "checkpointId": "84f75d1509dd46e9ad1cf3ba3044aba9"
+    }
+   },
+   "config": {
+    "name": "c2-T2-lr10",
+    "hyper": {
+     "temperature": 2.0,
+     "learning_rate": 10.0,
+     "max_param_norm": 8.0,
+     "gamma": 0.999
+    }
+   }
+  }
+ },
+ "trainingFailures": [],
+ "validation": {
+  "imitation": {
+   "games": 48,
+   "wins": 17,
+   "losses": 25,
+   "drawsOrTimeouts": 6,
+   "scoreRate": 0.4166666666666667,
+   "scoreRate95": [
+    0.28849459734577015,
+    0.5571891778463535
+   ],
+   "meanSeconds": 141.234375,
+   "answeredDecisions": 13579,
+   "fallbackDecisions": 0
+  },
+  "untrained": {
+   "games": 48,
+   "wins": 17,
+   "losses": 25,
+   "drawsOrTimeouts": 6,
+   "scoreRate": 0.4166666666666667,
+   "scoreRate95": [
+    0.28849459734577015,
+    0.5571891778463535
+   ],
+   "meanSeconds": 141.234375,
+   "answeredDecisions": 13579,
+   "fallbackDecisions": 0
+  },
+  "untrainedEqualsImitationGameForGame": true,
+  "untrainedStateUnchanged": true,
+  "candidates": {
+   "c1-T3-lr4": {
+    "summary": {
+     "games": 48,
+     "wins": 20,
+     "losses": 24,
+     "drawsOrTimeouts": 4,
+     "scoreRate": 0.4583333333333333,
+     "scoreRate95": [
+      0.3257502185455351,
+      0.5970916690505266
+     ],
+     "meanSeconds": 114.50625000000001,
+     "answeredDecisions": 11012,
+     "fallbackDecisions": 0
+    },
+    "vsImitation": {
+     "n": 24,
+     "mean": 0.041666666666666664,
+     "ci95": [
+      -0.125,
+      0.19791666666666666
+     ],
+     "seedsBetter": 11,
+     "seedsWorse": 6,
+     "seedsTied": 7,
+     "signTestP": 0.332305908203125
+    },
+    "evalDidNotTrain": true
+   },
+   "c2-T2-lr10": {
+    "summary": {
+     "games": 48,
+     "wins": 22,
+     "losses": 23,
+     "drawsOrTimeouts": 3,
+     "scoreRate": 0.4895833333333333,
+     "scoreRate95": [
+      0.35427357675333754,
+      0.6264368951456778
+     ],
+     "meanSeconds": 115.91701388888889,
+     "answeredDecisions": 11153,
+     "fallbackDecisions": 0
+    },
+    "vsImitation": {
+     "n": 24,
+     "mean": 0.07291666666666667,
+     "ci95": [
+      -0.11458333333333333,
+      0.25
+     ],
+     "seedsBetter": 10,
+     "seedsWorse": 6,
+     "seedsTied": 8,
+     "signTestP": 0.454498291015625
+    },
+    "evalDidNotTrain": true
+   }
+  }
+ },
+ "decision": {
+  "selected": "c2-T2-lr10",
+  "validationImprovement": {
+   "n": 24,
+   "mean": 0.07291666666666667,
+   "ci95": [
+    -0.11458333333333333,
+    0.25
+   ],
+   "seedsBetter": 10,
+   "seedsWorse": 6,
+   "seedsTied": 8,
+   "signTestP": 0.454498291015625
+  },
+  "gate": "lower 95% bound > 0.0",
+  "promoted": false,
+  "action": "ROLLED BACK: production stays the imitation policy (previous production)"
+ },
+ "test": {
+  "imitation": {
+   "games": 80,
+   "wins": 32,
+   "losses": 40,
+   "drawsOrTimeouts": 8,
+   "scoreRate": 0.45,
+   "scoreRate95": [
+    0.34577510374379766,
+    0.5588068698826599
+   ],
+   "meanSeconds": 130.58666666666664,
+   "answeredDecisions": 20929,
+   "fallbackDecisions": 0
+  },
+  "candidateRestoredFreshProcess": {
+   "games": 80,
+   "wins": 38,
+   "losses": 36,
+   "drawsOrTimeouts": 6,
+   "scoreRate": 0.5125,
+   "scoreRate95": [
+    0.4049314460370689,
+    0.6189230605563166
+   ],
+   "meanSeconds": 118.54604166666665,
+   "answeredDecisions": 19001,
+   "fallbackDecisions": 0
+  },
+  "candidateVsImitation": {
+   "n": 40,
+   "mean": 0.0625,
+   "ci95": [
+    -0.0875,
+    0.20625
+   ],
+   "seedsBetter": 17,
+   "seedsWorse": 13,
+   "seedsTied": 10,
+   "signTestP": 0.584664711728692
+  },
+  "evalDidNotTrain": true,
+  "candidateHeadsRestored": {
+   "squad": {
+    "hash": "b96175812ded1378",
+    "step": 50,
+    "consumed": 200
+   },
+   "main": {
+    "hash": "c887aa0c3118ac35",
+    "step": 50,
+    "consumed": 200
+   },
+   "optimizerSteps": 0,
+   "checkpointsRestored": 2
+  }
+ },
+ "restoreDeterminism": {
+  "seeds": 8,
+  "identicalGames": true
+ },
+ "headToHead": {
+  "games": 40,
+  "candidateWins": 11,
+  "candidateLosses": 20,
+  "drawsOrTimeouts": 9,
+  "candidateScoreRate": 0.3875,
+  "candidateScoreRate95": [
+   0.2528091107824831,
+   0.5419064105488554
+  ],
+  "vsEven": {
+   "n": 20,
+   "mean": -0.1125,
+   "ci95": [
+    -0.25,
+    0.025
+   ],
+   "seedsBetter": 4,
+   "seedsWorse": 10,
+   "seedsTied": 6,
+   "signTestP": 0.1795654296875
+  }
+ }
+}

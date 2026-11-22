@@ -58,8 +58,11 @@ export class AIDirector {
      * least one decision (a match played entirely by the fallback teaches SLAI nothing). Safe to call repeatedly; resolves to the service's
      * answer, or null when nothing was sent.
      */
-    async finish(m, timeoutMs = 4000) {
-        if (this.finished || this.cfg.mode !== 'slai' || !m.result.over || this.stats.ok === 0)
+    async finish(m, timeoutMs = 4000, opts = {}) {
+        // A game that ran out of time has no winner: it is reported only when the caller says so (truncated), and SLAI's learner then
+        // accounts for it as a cut-off episode instead of leaving it to be swept as abandoned.
+        const truncated = opts.truncated === true && !m.result.over;
+        if (this.finished || this.cfg.mode !== 'slai' || (!m.result.over && !truncated) || this.stats.ok === 0)
             return null;
         this.finished = true;
         const ctl = new AbortController();
@@ -67,7 +70,7 @@ export class AIDirector {
         try {
             const res = await fetch(this.cfg.baseUrl + '/v1/match_end', {
                 method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
-                body: JSON.stringify({ seed: m.seed, team: this.team, winner: m.result.winner, episode: m.episodeId }),
+                body: JSON.stringify({ seed: m.seed, team: this.team, winner: truncated ? null : m.result.winner, episode: m.episodeId, ...(truncated ? { truncated: true } : {}) }),
             });
             return res.ok ? (await res.json()) : null;
         }

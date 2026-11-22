@@ -49,6 +49,7 @@ class Slot:
         self.error: str | None = None
         self.load_ms = 0.0
         self.calls = 0
+        self.ok = 0  # calls that returned in time without an exception
         self.failures = 0
         self.timeouts = 0
         self.skipped = 0
@@ -68,8 +69,12 @@ class Slot:
         p = lambda q: round(lat[min(len(lat) - 1, int(q * len(lat)))], 2) if lat else 0.0  # noqa: E731
         return {
             "state": self.state, "class": self.cls, "loadMs": round(self.load_ms), "error": self.error,
-            "calls": self.calls, "failures": self.failures, "timeouts": self.timeouts, "skipped": self.skipped,
+            "calls": self.calls, "ok": self.ok, "failures": self.failures, "timeouts": self.timeouts, "skipped": self.skipped,
             "breakerOpen": self.breaker_open(), "lastError": self.last_error, "lastTrace": self.last_trace,
+            # what has actually happened, as separate facts (each implies nothing about the next): the agent exists / is not tripped /
+            # was asked / answered in time. Whether the answer changed a decision or was stored is the adapter's to report (see ladder()).
+            "ladder": {"initialized": self.state == "ready", "healthy": self.state == "ready" and not self.breaker_open() and self.consecutive == 0,
+                       "called": self.calls > 0, "executed": self.ok > 0},
             "latencyMs": {"p50": p(0.5), "p95": p(0.95), "max": round(lat[-1], 2) if lat else 0.0},
         }
 
@@ -225,6 +230,7 @@ class RealAgentHost:
             self._trip(s)
             raise
         s.consecutive = 0
+        s.ok += 1
         s.cooldown = max(15.0, s.cooldown / 2)
         s.lat.append((time.perf_counter() - t0) * 1000.0)
         return out
@@ -251,6 +257,7 @@ class RealAgentHost:
             try:
                 fn(s.instance)
                 s.consecutive = 0
+                s.ok += 1
                 s.lat.append((time.perf_counter() - t0) * 1000.0)
             except Exception as e:  # noqa: BLE001
                 s.failures += 1

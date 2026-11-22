@@ -18,6 +18,7 @@ from .agents.observability import ObservabilityAgent
 from .agents.perception import PerceptionAgent
 from .agents.planning import PlanningAgent
 from .agents.safety import SafetyAgent
+from .learner import TacticalLearner
 from .policy import DEFAULT_WEIGHTS, TacticalDecisionPolicy
 from .resolver import main_actions, squad_actions
 from .schema import episode_key, make_action, make_response, validate_observation
@@ -32,13 +33,17 @@ class Orchestrator:
 
     def __init__(self, weights_path: str = DEFAULT_WEIGHTS, adaptive_path: str | None = None, telemetry_path: str | None = None,
                  tactics_path: str | None = None, agents: str = "lite", host=None, strict: bool = False, budgets: dict | None = None,
-                 slai_root: str | None = None, safety_enforcing: bool = False, log=None, enabled=None) -> None:
+                 slai_root: str | None = None, safety_enforcing: bool = False, log=None, enabled=None,
+                 learning: str = "off", learning_dir: str | None = None, learner: TacticalLearner | None = None,
+                 learning_opts: dict | None = None, knowledge_db: str | None = None) -> None:
         if agents not in ("lite", "real"):
             raise ValueError("agents must be 'lite' or 'real'")
         self.mode = agents
         self.host = None
         self.warm_ms: dict = {}
         self.policy = TacticalDecisionPolicy.load(weights_path)
+        # Persistent policy learning through SLAI's external-learning service (off = imitation policy only, as before)
+        self.learner = learner or TacticalLearner(learning, learning_dir, slai_root, log=log, **(learning_opts or {}))
         if agents == "real":
             from .bridge import adapters as A
             from .bridge.host import RealAgentHost
@@ -53,9 +58,9 @@ class Orchestrator:
             caps = dict(budgets or {})
             h = self.host
             self.perception = A.RealPerception(h, caps)
-            self.knowledge = A.RealKnowledge(h, tactics_path, caps)
+            self.knowledge = A.RealKnowledge(h, tactics_path, caps, knowledge_db)
             self.learning = A.RealLearning(h, adaptive_path, caps)
-            self.planning = A.RealPlanning(h, self.policy, caps)
+            self.planning = A.RealPlanning(h, self.policy, caps, self.learner)
             self.collaborative = A.RealCollaborative(h, caps)
             self.safety = A.RealSafety(h, caps, enforcing=safety_enforcing)
             self.evaluation = A.RealEvaluation(h, caps)
@@ -65,7 +70,7 @@ class Orchestrator:
             self.perception = PerceptionAgent()
             self.knowledge = KnowledgeAgent(tactics_path)
             self.learning = LearningAgent(adaptive_path)
-            self.planning = PlanningAgent(self.policy)
+            self.planning = PlanningAgent(self.policy, self.learner)
             self.collaborative = CollaborativeAgent()
             self.safety = SafetyAgent()
             self.evaluation = EvaluationAgent()
@@ -88,7 +93,7 @@ class Orchestrator:
                 ok = None
             out[name] = round((time.perf_counter() - t0) * 1000.0) if ok not in (None, False) else None
 
-        threads = [threading.Thread(target=go, args=(n, f), daemon=True) for n, f in jobs.items() if self.host.usable(n)]
+        threads = [threading.Thread(target=go, args=(n, f), daemon=True) for n, f in jobs.items() if self.host.usable(n) or n == "knowledge"]  # the tactics repository does not need the KnowledgeAgent instance
         for t in threads:
             t.start()
         for t in threads:
@@ -163,7 +168,7 @@ class Orchestrator:
             "mode": self.mode,
             "stages": ctx.flags.get("stages", {}),
         }
-        for k_meta, k_flag in (("scene", "scene"), ("plans", "plans"), ("htnMasked", "htn_masked"), ("safetyVerdict", "safety_real")):
+        for k_meta, k_flag in (("scene", "scene"), ("plans", "plans"), ("htnMasked", "htn_masked"), ("safetyVerdict", "safety_real"), ("learner", "learned")):
             if k_flag in ctx.flags:
                 meta[k_meta] = ctx.flags[k_flag]
         return make_response(obs, ctx.actions, meta)
@@ -198,11 +203,17 @@ class Orchestrator:
         meta = {"policy": "emergency-hold", "service": __version__, "decisionId": f"{obs.get('episode') or obs['seed']}:{obs['team']}:{obs['tick']}:{obs['generation']}", "fallback": True, "errors": ctx.errors, "agents": [], "latencyMs": round((time.perf_counter() - t0) * 1000, 2)}
         return make_response(obs, [], meta)
 
-    def match_end(self, seed: int, team: int, winner: int | None, episode: str | None = None) -> dict:
+    def match_end(self, seed: int, team: int, winner: int | None, episode: str | None = None, truncated: bool = False) -> dict:
         key = (episode or seed, team)
         self.evaluation.forget(key)
         self.planning.forget(key)
-        return self.learning.update_from_match(seed, team, winner, episode=episode)
+        learned = self.learner.finish(key, winner, truncated) if self.learner.active() else None
+        if truncated:  # a game cut off by its time limit has no winner: only the learner accounts for it (never the opponent-bias profile)
+            return {"truncated": True, "learner": learned}
+        out = self.learning.update_from_match(seed, team, winner, episode=episode, apply_bias=not self.learner.active())
+        if learned is not None:
+            out["learner"] = learned
+        return out
 
     def stats(self) -> dict:
         s = self.observability.snapshot()
@@ -210,17 +221,46 @@ class Orchestrator:
         s["evaluation"] = self.evaluation.report()
         s["adaptive"] = {k: self.learning.profile[k] for k in ("matches", "wins", "losses", "draws")}
         s["agentMode"] = self.mode
+        s["learning"] = self.learner.status()
         if self.host is not None:
             s["realAgents"] = self.host.status()
             s["realUse"] = {
-                "knowledge": {"queries": self.knowledge.queries, "applicableButNotRetrieved": self.knowledge.misses},
+                "knowledge": self.knowledge.status(),
                 "collaborative": {"arbitrations": self.collaborative.arbitrations, "attackVetoes": self.collaborative.vetoes},
                 "safety": {"reviews": self.safety.reviews, "blocks": self.safety.blocks, "cacheHits": self.safety.cache_hits, "mode": self.safety.mode, "dispatched": self.safety.dispatched, "last": self.safety.last},
                 "learning": {**self.learning.counters(), "lastGuidance": self.learning.last_guidance},
             }
+            s["ladder"] = self.ladder()
         return s
 
+    def ladder(self) -> dict:
+        """Per real agent: initialized -> healthy -> called -> executed (from the host) -> contributed -> persisted (from the adapters).
+        Each rung is a separate fact; a stage that fell back to the built-in logic never shows ``contributed`` from the real agent."""
+        if self.host is None:
+            return {}
+        k, c, s, l = self.knowledge, self.collaborative, self.safety, self.learning
+        contrib = {  # what the real agent's answer did to a decision (None: it feeds telemetry only)
+            "knowledge": k.used, "collaborative": c.arbitrations + c.vetoes, "safety": s.reviews,
+            "planning": getattr(self.planning, "masked_total", None), "perception": None, "learning": None, "evaluation": None, "observability": None}
+        persisted = {"knowledge": bool(k.store and (st := k.store.status()).get("opened") and st.get("recordsSeededThisRun", 0) + st.get("recordsUnchanged", 0) > 0), "learning": l.persisted > 0}
+        out = {}
+        for n, v in self.host.status()["agents"].items():
+            lad = dict(v["ladder"])
+            lad["contributed"] = None if contrib.get(n) is None else contrib[n] > 0
+            lad["persisted"] = persisted.get(n)
+            if n == "knowledge" and k.store is not None:
+                # Tactics are stored in and retrieved from SLAI's authorised repository, not through the KnowledgeAgent instance: the
+                # rungs below describe the repository; the instance's own call count stays visible as ``agentInstanceCalled``.
+                st = k.store.status()
+                lad.update({"agentInstanceCalled": lad["called"], "path": "assurance.KnowledgeRepository", "called": st.get("searches", 0) + st.get("errors", 0) > 0,
+                            "executed": st.get("searches", 0) > 0, "healthy": bool(st.get("opened")) and not st.get("lastError")})
+            lad["role"] = "decision" if n in ("knowledge", "planning", "collaborative") else "advisory" if n == "safety" else "telemetry"
+            out[n] = lad
+        return out
+
     def close(self) -> None:
+        if self.learner.active():
+            self.learner.flush()
         if self.host is not None:
             self.host.close()
 
