@@ -56,8 +56,9 @@ def decide_stance(sit: dict, current: str | None = None, held: int | None = None
 class PlanningAgent(Agent):
     name = "planning"
 
-    def __init__(self, policy: TacticalDecisionPolicy) -> None:
+    def __init__(self, policy: TacticalDecisionPolicy, learner=None) -> None:
         self.policy = policy
+        self.learner = learner  # TacticalLearner (SLAI external learning) or None: objectives are then the imitation policy's argmax
         self.stance_since: dict = {}  # episode key -> (stance, tick it was first seen)
 
     def _stance(self, obs: dict, sit: dict) -> str:
@@ -81,6 +82,9 @@ class PlanningAgent(Agent):
         use_model = self.policy.trained
         if not use_model:
             ctx.notes.append("policy untrained: scripted objectives")
+        learner = self.learner if (use_model and self.learner is not None and self.learner.active()) else None
+        lv = learner.begin_tick(episode_key(obs), obs, sit) if learner is not None else None
+        learned = {"squad": 0, "main": 0, "fallback": 0}
         overrides = 0
         conf_sum, conf_n = 0.0, 0
         for sq in obs["squads"]:
@@ -90,7 +94,13 @@ class PlanningAgent(Agent):
             if use_model:
                 x = squad_features(obs, sit, sq)
                 merged = {o: bias["squad"].get(o, 0.0) + kn_bias.get(o, 0.0) + consequence_adjust(obs, sit, sq, o) for o in legal}
-                obj, conf, _ = self.policy.choose_squad(x, legal, merged)
+                obj, conf, prior = self.policy.choose_squad(x, legal, merged)
+                pick = learner.choose(lv, "squad", obs["tick"], f"s{sq['slot']}", x, set(legal), prior) if lv is not None else None
+                if pick is not None:
+                    obj, info, conf = pick[0], pick[1], pick[1]["p"]
+                    learned["squad"] += 1
+                elif lv is not None:
+                    learned["fallback"] += 1
             else:
                 obj, conf = scripted_squad_objective(obs, sit, sq), 1.0
             # hard guardrails that no learned score may override (documented in the GDD risks): an unarmed squad refills,
@@ -101,20 +111,32 @@ class PlanningAgent(Agent):
                 obj, overrides = "ProtectMain", overrides + 1
             if obj not in legal:
                 obj, overrides = scripted_squad_objective(obs, sit, sq), overrides + 1
+            if use_model and lv is not None and pick is not None and obj != pick[0]:
+                learner.executed(lv, "squad", info, obj)  # the game ran something else: that decision must not be credited
             ctx.objectives[sq["slot"]] = obj
             conf_sum += conf
             conf_n += 1
         legal_m = legal_main_objectives(obs, sit)
         if use_model:
             mx = main_features(obs, sit)
-            mobj, mconf, _ = self.policy.choose_main(mx, legal_m, bias["main"])
+            mobj, mconf, mprior = self.policy.choose_main(mx, legal_m, bias["main"])
+            mpick = learner.choose(lv, "main", obs["tick"], "m", mx, set(legal_m), mprior) if lv is not None else None
+            if mpick is not None:
+                mobj, minfo, mconf = mpick[0], mpick[1], mpick[1]["p"]
+                learned["main"] += 1
+            elif lv is not None:
+                learned["fallback"] += 1
         else:
             mobj, mconf = scripted_main_objective(obs, sit), 1.0
         if sit["danger"] and mobj != "Retreat":
             mobj, overrides = "Retreat", overrides + 1  # the Main never walks into a lethal crossfire
         if mobj not in legal_m:
             mobj = scripted_main_objective(obs, sit)
+        if use_model and lv is not None and mpick is not None and mobj != mpick[0]:
+            learner.executed(lv, "main", minfo, mobj)
         ctx.main_objective = mobj
+        if learner is not None:
+            ctx.flags["learned"] = {"mode": learner.mode, "active": lv is not None, **learned}
         ctx.flags["overrides"] = overrides
         ctx.flags["policy_conf"] = (conf_sum + mconf) / (conf_n + 1)
 

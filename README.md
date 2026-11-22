@@ -107,8 +107,8 @@ harmless. `npm run audio:check` shows what is still missing, `assets/audio/READM
 
 ```bash
 npm run typecheck        # strict TypeScript
-npm test                 # 56 tests: engine rules & boundaries, determinism, 50v50 stress, AI fuzzing, director fallbacks, episode/finish reporting, client logic, hit effects, sound cues
-npm run test:py          # 100 tests: schema, safety, policy, orchestrator, HTTP server, trainer, episode-idempotent learning, stance hysteresis, real-agent bridge (some run the genuine Collaborative/Observability agents when a SLAI checkout is present)
+npm test                 # 57 tests: engine rules & boundaries, determinism, 50v50 stress, AI fuzzing, director fallbacks, episode/finish reporting, client logic, hit effects, sound cues
+npm run test:py          # 132 tests (those that need a SLAI checkout skip themselves without one): schema, safety, policy, orchestrator, HTTP server, trainer, episode-idempotent learning, persistent policy learning (SLAI's real learner), the governed tactics repository, stance hysteresis, real-agent bridge (some run the genuine Collaborative/Observability agents when a SLAI checkout is present)
 npm run audio:check      # which sound cues still have no file in assets/audio
 npm run headless -- --matches 10 --mode slai --url http://127.0.0.1:8765   # SLAI vs scripted baseline
 ```
@@ -125,6 +125,10 @@ python3 -m slai.train --data data/selfplay_a.jsonl --out slai/data/weights.json
 ```
 
 See `docs/SLAI.md` for what is learned, what is not, and the honest evaluation.
+
+**Persistent learning across games** (off by default): `python -m slai.server --learning train --learning-dir slai/data/policy` learns from finished games through SLAI's external-learning service and checkpoints atomically;
+`--learning evaluate` serves the restored policy frozen. In a measured run (200 training games, held-out seeds, mirrored sides) **no improvement was demonstrated** and the promotion gate rolled the candidate back - see `docs/LEARNING_EVALUATION.md`.
+`docs/INTEGRATION_AUDIT.md` lists what was fixed in the GangUP × SLAI integration, what was verified, and what could not be verified.
 
 ## Known limitations
 

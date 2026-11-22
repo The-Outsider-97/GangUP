@@ -227,6 +227,27 @@ test('finish() reports a finished match to SLAI exactly once, and only if SLAI a
   srv.close();
 });
 
+test('finish() reports a time-limited game as truncated (no winner), only when the caller says so and only once', async () => {
+  const bodies: any[] = [];
+  const srv = await mock((b, res) => { bodies.push(JSON.parse(b)); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"truncated":true}'); });
+  const mk = () => { const d = new AIDirector(1, { difficulty: 'hard', mode: 'slai', baseUrl: srv.url, deadlineMs: 400 }); d.stats.ok = 5; return d; };
+  const running = () => new Match({ seed: 4, humanTeam: null, episodeId: 'ep-cut' }); // result.over is false: the time limit ended it
+
+  assert.equal(await mk().finish(running()), null); // not truncated unless the caller says so: nothing is guessed
+  assert.equal(bodies.length, 0);
+  const d = mk();
+  const m = running();
+  assert.deepEqual(await d.finish(m, 400, { truncated: true }), { truncated: true });
+  assert.equal(await d.finish(m, 400, { truncated: true }), null); // once
+  assert.deepEqual(bodies, [{ seed: 4, team: 1, winner: null, episode: 'ep-cut', truncated: true }]);
+
+  const over = new Match({ seed: 5, humanTeam: null, episodeId: 'ep-won' });
+  over.result = { over: true, winner: 1, reason: 'test', tick: 9 };
+  await mk().finish(over, 400, { truncated: true }); // a game that really ended is never relabelled as truncated
+  assert.deepEqual(bodies[1], { seed: 5, team: 1, winner: 1, episode: 'ep-won' });
+  srv.close();
+});
+
 test('finish() never throws when the service is down', async () => {
   const d = new AIDirector(1, { difficulty: 'hard', mode: 'slai', baseUrl: 'http://127.0.0.1:9', deadlineMs: 400 });
   d.stats.ok = 1;

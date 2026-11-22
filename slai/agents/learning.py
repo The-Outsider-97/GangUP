@@ -115,7 +115,8 @@ class LearningAgent(Agent):
             u["main"][main_objective] = u["main"].get(main_objective, 0) + 1
 
     # ------------------------------------------------------------------ post-match learning
-    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None) -> dict:
+    def update_from_match(self, seed: int, team: int, winner: int | None, lr: float = 0.08, episode: str | None = None,
+                          apply_bias: bool = True) -> dict:
         """One reward-weighted step per *episode*. ``episode`` is the client's game id; without it the call is only accepted for a
         game this service actually played (decisions were seen for that seed/team), which is then consumed - so a repeated or
         stray call cannot count a match twice. The result carries ``duplicate`` / ``ignored`` when nothing was learned."""
@@ -130,11 +131,13 @@ class LearningAgent(Agent):
             if not episode and usage is None and seen is None:
                 return {"ignored": "no active episode for this seed/team", "reward": reward, "matches": self.profile["matches"]}
             usage = usage or {"squad": {}, "main": {}}
+            # ``apply_bias=False``: an external learner (TacticalLearner) owns the persistent policy updates, so this heuristic nudge must
+            # not also move the same objective preferences. Match counts and the idempotency ledger are kept either way.
             for head, objs, bias in (("squad", SQUAD_OBJECTIVES, self.profile["squad_bias"]), ("main", MAIN_OBJECTIVES, self.profile["main_bias"])):
                 counts = usage[head]
                 total = sum(counts.values())
-                if not total:
-                    continue  # no decisions of this kind: nothing to attribute
+                if not total or not apply_bias:
+                    continue  # no decisions of this kind (or biases owned elsewhere): nothing to attribute
                 mean = 1.0 / len(objs)
                 for o in objs:
                     bias[o] = _clip(bias[o] + lr * reward * (counts.get(o, 0) / total - mean))
@@ -148,7 +151,7 @@ class LearningAgent(Agent):
             if token:
                 self.profile["episodes"] = (self.profile["episodes"] + [token])[-KEEP_EPISODES:]
             self.save()
-            return {"reward": reward, "matches": self.profile["matches"], "episode": episode, "usage": usage}
+            return {"reward": reward, "matches": self.profile["matches"], "episode": episode, "usage": usage, "biasApplied": apply_bias}
 
     def run(self, ctx: Context) -> None:
         self.observe(ctx.obs, ctx.situation)

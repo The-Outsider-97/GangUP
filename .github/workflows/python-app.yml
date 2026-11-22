@@ -37,3 +37,14 @@ jobs:
     - name: Test with pytest
       run: |
         pytest
+    - name: Use Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+    - name: TypeScript typecheck and engine/AI tests
+      run: |
+        npm install --no-audit --no-fund
+        npm run typecheck
+        npm test
+    # The Python tests that need a SLAI checkout (real learner, real knowledge repository) skip themselves when none is present;
+    # run them locally with SLAI_ROOT set (see docs/SLAI.md).

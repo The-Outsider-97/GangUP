@@ -88,18 +88,29 @@ class FakePerception(Fake):
 
 
 class FakeKnowledge(Fake):
+    """Contract fake of the governed tactics store (``slai.bridge.knowledge_store.TacticStore``): open() / search(tags) / status().
+    The real repository is exercised in ``tests_py/test_knowledge_store.py``; here only the adapter's behaviour is under test."""
+
     def __init__(self, only=None, **kw):
         super().__init__(**kw)
-        self.docs, self.only = {}, only
+        self.only, self.tactics, self.opened, self.searches = only, [], False, 0
 
-    def add_document(self, text, doc_id=None, metadata=None):
-        self.docs[doc_id] = {"doc_id": doc_id, "text": text, "tokens": text.split(), "metadata": metadata or {}}
+    def bind(self, tactics):
+        self.tactics = tactics
+        return self
 
-    def retrieve(self, query, k=5):
-        self._enter(query)
-        q = set(query.split())
-        out = [(0.5, d) for d in self.docs.values() if q & set(d["tokens"]) and (self.only is None or d["metadata"].get("tactic") in self.only)]
-        return out[:k]
+    def open(self):
+        self._enter("open")
+        self.opened = True
+        return self
+
+    def search(self, tags, k=None):
+        self._enter(sorted(tags))
+        self.searches += 1
+        return [t["id"] for t in self.tactics if set(t["when"]) & set(tags) and (self.only is None or t["id"] in self.only)]
+
+    def status(self):
+        return {"opened": self.opened, "searches": self.searches, "recordsSeededThisRun": len(self.tactics), "recordsUnchanged": 0}
 
 
 class FakeTask:
@@ -231,7 +242,8 @@ def drain(host: RealAgentHost, timeout: float = 3.0) -> None:
 
 
 def real_orch(tmp: str, host: RealAgentHost, **kw) -> Orchestrator:
-    with mock.patch.dict(sys.modules, fake_planning_module()):
+    store = host.slots["knowledge"].instance  # the fake stands in for the governed store (see FakeKnowledge)
+    with mock.patch.dict(sys.modules, fake_planning_module()), mock.patch("slai.bridge.adapters._make_store", lambda path, tactics: store.bind(tactics)):
         return Orchestrator(agents="real", host=host, adaptive_path=os.path.join(tmp, "adaptive.json"), **kw)
 
 
@@ -349,7 +361,7 @@ class RealPipelineTests(unittest.TestCase):
         self.assertIn("ratio", sent["input_data"])
         self.assertTrue(set(sent["input_data"].split()) <= set(o.perception.VOCAB), sent["input_data"])
         self.assertTrue(set(o.perception.VOCAB) <= set(f["perception"].tokenizer.vocab))  # nothing would embed as [UNK]
-        self.assertTrue(f["knowledge"].docs and all(k.startswith("gangup:") for k in f["knowledge"].docs))
+        self.assertTrue(f["knowledge"].opened and f["knowledge"].searches > 0)  # tactics were retrieved from the governed store
         self.assertTrue(f["planning"].library)
         self.assertTrue(f["safety"].calls)
         self.assertTrue(f["learning"].calls)  # first decision of a match sends a performance signal
@@ -867,3 +879,24 @@ class RealCollaborativeObservabilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LadderTests(unittest.TestCase):
+    """installed/initialised/healthy/called/executed/contributed/persisted are separate facts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_each_rung_is_reported_separately(self):
+        host, f = make_host(safety=FakeSafety(fail="induced failure"))
+        o = real_orch(self.tmp.name, host)
+        o.decide(fight_obs())
+        lad = o.ladder()
+        self.assertEqual((lad["knowledge"]["initialized"], lad["knowledge"]["called"], lad["knowledge"]["executed"]), (True, True, True))
+        self.assertTrue(lad["knowledge"]["contributed"] and lad["knowledge"]["persisted"] is True and lad["knowledge"]["role"] == "decision")
+        # a safety agent that is called but throws is initialised and called, never "executed" or "contributed"
+        self.assertEqual((lad["safety"]["initialized"], lad["safety"]["called"], lad["safety"]["executed"], lad["safety"]["contributed"]), (True, True, False, False))
+        self.assertEqual(lad["safety"]["role"], "advisory")
+        self.assertIsNone(lad["perception"]["contributed"])  # telemetry only: it never claims to change a decision
+        self.assertIs(o.stats()["ladder"]["knowledge"]["executed"], True)

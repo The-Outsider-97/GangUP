@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     time.sleep(1.0)
 
     st = host.status()
+    lad = orch.ladder()
     ok_all = True
     print(f"{'stage':<14}{'loaded':<13}{'served by':<34}{'calls':>6}{'fail':>6}{'t/o':>5}{'p50 ms':>9}{'p95 ms':>9}")
     for n in STAGES:
@@ -159,9 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         pending = sum(1 for x in served if "async" in str(x))
         label = (f"{real}/{len(served)} real" + (f" ({pending} async)" if pending else "")) if served else "-"
         # "real" must mean the agent actually answered: loaded, served every decision, called at least once, no failures or timeouts
-        stage_ok = sl["state"] == "ready" and served and real == len(served) and sl["calls"] > 0 and sl["failures"] == 0 and sl["timeouts"] == 0
+        # (the knowledge stage is served through SLAI's authorised repository, so its "called" comes from the repository, not the agent instance)
+        called = lad[n]["called"] if n == "knowledge" else sl["calls"] > 0
+        stage_ok = sl["state"] == "ready" and served and real == len(served) and called and sl["failures"] == 0 and sl["timeouts"] == 0 and (n != "knowledge" or lad[n]["healthy"])
         ok_all &= bool(stage_ok)
         print(f"{n:<14}{sl['state']:<13}{label:<34}{sl['calls']:>6}{sl['failures']:>6}{sl['timeouts']:>5}{sl['latencyMs']['p50']:>9}{sl['latencyMs']['p95']:>9}")
+    print("\nstate ladder (each rung is a separate fact; '-' = not applicable, a stage that only feeds telemetry never shows 'contributed'):")
+    print(f"{'stage':<14}{'role':<11}{'init':>6}{'healthy':>9}{'called':>8}{'executed':>10}{'contributed':>13}{'persisted':>11}")
+    yn = lambda v: "-" if v is None else ("yes" if v else "NO")  # noqa: E731
+    for n in STAGES:
+        r = lad[n]
+        print(f"{n:<14}{r['role']:<11}{yn(r['initialized']):>6}{yn(r['healthy']):>9}{yn(r['called']):>8}{yn(r['executed']):>10}{yn(r['contributed']):>13}{yn(r['persisted']):>11}")
     print()
     for n in STAGES:
         sl = st["agents"][n]
